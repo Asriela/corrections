@@ -1,0 +1,393 @@
+using System.Collections.Generic;
+using UnityEngine;
+
+public static class AgentSocialInteractions
+{
+    public class ActiveSocialInteraction
+    {
+        public Agent giver;
+        public Agent receiver;
+        public AgentInteraction interaction;
+        public float timer;
+
+        public ActiveSocialInteraction(Agent giver, Agent receiver, AgentInteraction interaction)
+        {
+            this.giver = giver;
+            this.receiver = receiver;
+            this.interaction = interaction;
+            this.timer = interaction != null ? interaction.duration : 0f;
+        }
+    }
+
+    private static readonly List<ActiveSocialInteraction> activeInteractions = new();
+
+    // =====================================================
+    // START
+    // =====================================================
+
+    public static bool TryStartSocialInteraction(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        if (giver == null || receiver == null || interaction == null)
+            return false;
+
+        if (!interaction.isSocial)
+            return false;
+
+        if (giver.isDead || receiver.isDead)
+            return false;
+
+        if (giver.IsLeavingTown || receiver.IsLeavingTown)
+            return false;
+
+        if (giver.isFrightened || receiver.isFrightened)
+            return false;
+
+        if (giver.currentSocialInteraction != null || receiver.currentSocialInteraction != null)
+            return false;
+
+        ActiveSocialInteraction active = new ActiveSocialInteraction(giver, receiver, interaction);
+
+        giver.currentSocialInteraction = active;
+        receiver.currentSocialInteraction = active;
+
+        activeInteractions.Add(active);
+
+        StartInteraction(active);
+
+        return true;
+    }
+
+    private static void StartInteraction(ActiveSocialInteraction active)
+    {
+        if (active == null)
+            return;
+
+        Agent giver = active.giver;
+        Agent receiver = active.receiver;
+        AgentInteraction interaction = active.interaction;
+
+        if (giver == null || receiver == null || interaction == null)
+            return;
+
+        // Social interaction overrides current behaviour.
+        giver.interactionTarget = null;
+        receiver.interactionTarget = null;
+
+        if (interaction.locksGiver)
+        {
+            AgentMovement.ClearPath(giver);
+            giver.currentSpeed = 0f;
+        }
+
+        if (interaction.locksReceiver)
+        {
+            AgentMovement.ClearPath(receiver);
+            receiver.currentSpeed = 0f;
+        }
+
+        // Apply animation states.
+        giver.animationState = interaction.giverAnimation;
+        receiver.animationState = interaction.receiverAnimation;
+
+        FaceEachOther(giver, receiver);
+
+        if (interaction.applyEffectOnStart)
+            ApplySocialEffect(giver, receiver, interaction);
+    }
+
+    // =====================================================
+    // UPDATE
+    // =====================================================
+
+    public static void UpdateSocialInteractions()
+    {
+        for (int i = activeInteractions.Count - 1; i >= 0; i--)
+        {
+            ActiveSocialInteraction active = activeInteractions[i];
+
+            if (ShouldCancel(active))
+            {
+                CancelInteraction(active);
+                activeInteractions.RemoveAt(i);
+                continue;
+            }
+
+            UpdateInteraction(active);
+
+            if (active.timer <= 0f)
+            {
+                FinishInteraction(active);
+                activeInteractions.RemoveAt(i);
+            }
+        }
+    }
+
+    private static void UpdateInteraction(ActiveSocialInteraction active)
+    {
+        if (active == null)
+            return;
+
+        Agent giver = active.giver;
+        Agent receiver = active.receiver;
+        AgentInteraction interaction = active.interaction;
+
+        if (giver == null || receiver == null || interaction == null)
+            return;
+
+        FaceEachOther(giver, receiver);
+
+        // Keep both agents locked if this interaction requires it.
+        if (interaction.locksGiver)
+        {
+            AgentMovement.ClearPath(giver);
+            giver.currentSpeed = 0f;
+        }
+
+        if (interaction.locksReceiver)
+        {
+            AgentMovement.ClearPath(receiver);
+            receiver.currentSpeed = 0f;
+        }
+
+        // Keep animations active for the full duration.
+        giver.animationState = interaction.giverAnimation;
+        receiver.animationState = interaction.receiverAnimation;
+
+        active.timer -= Time.deltaTime;
+    }
+
+    // =====================================================
+    // FINISH / CANCEL / INTERRUPT
+    // =====================================================
+
+    private static void FinishInteraction(ActiveSocialInteraction active)
+    {
+        if (active == null)
+            return;
+
+        Agent giver = active.giver;
+        Agent receiver = active.receiver;
+        AgentInteraction interaction = active.interaction;
+
+        if (giver == null || receiver == null || interaction == null)
+            return;
+
+        if (interaction.applyEffectOnEnd)
+            ApplySocialEffect(giver, receiver, interaction);
+
+        ClearAgentFromInteraction(giver, interaction.giverPickNewDestinationAfter);
+        ClearAgentFromInteraction(receiver, interaction.receiverPickNewDestinationAfter);
+    }
+
+    public static void CancelInteraction(ActiveSocialInteraction active)
+    {
+        if (active == null)
+            return;
+
+        ClearAgentFromInteraction(active.giver, true);
+        ClearAgentFromInteraction(active.receiver, true);
+    }
+
+    public static void InterruptSocialInteraction(Agent agent)
+    {
+        if (agent == null || agent.currentSocialInteraction == null)
+            return;
+
+        ActiveSocialInteraction active = agent.currentSocialInteraction;
+
+        CancelInteraction(active);
+        activeInteractions.Remove(active);
+    }
+
+    private static bool ShouldCancel(ActiveSocialInteraction active)
+    {
+        if (active == null)
+            return true;
+
+        Agent giver = active.giver;
+        Agent receiver = active.receiver;
+
+        if (giver == null || receiver == null)
+            return true;
+
+        if (giver.isDead || receiver.isDead)
+            return true;
+
+        if (giver.IsLeavingTown || receiver.IsLeavingTown)
+            return true;
+
+        if (giver.isFrightened || receiver.isFrightened)
+            return true;
+
+        return false;
+    }
+
+    private static void ClearAgentFromInteraction(Agent agent, bool pickNewDestination)
+    {
+        if (agent == null)
+            return;
+
+        agent.currentSocialInteraction = null;
+        agent.animationState = AnimationState.idle;
+        agent.interactionTarget = null;
+
+        if (pickNewDestination &&
+            !agent.isDead &&
+            !agent.IsLeavingTown &&
+            !agent.isFrightened)
+        {
+            AgentPathing.PickNewDestination(agent);
+        }
+    }
+
+    // =====================================================
+    // HELPERS
+    // =====================================================
+
+    private static void FaceEachOther(Agent giver, Agent receiver)
+    {
+        if (giver == null || receiver == null)
+            return;
+
+        Vector3 toReceiver = receiver.transform.position - giver.transform.position;
+
+        giver.Visuals.UpdateFacingFromDirection(toReceiver);
+        receiver.Visuals.UpdateFacingFromDirection(-toReceiver);
+    }
+
+    // =====================================================
+    // SOCIAL AFTER EFFECTS
+    // =====================================================
+
+    private static void ApplySocialEffect(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        if (giver == null || receiver == null || interaction == null)
+            return;
+
+        switch (interaction.type)
+        {
+            case InteractionType.Conversation:
+                ApplyConversation(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Distract:
+                ApplyDistract(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Brawl:
+                ApplyBrawl(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Argument:
+                ApplyArgument(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Gossip:
+                ApplyGossip(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Entertain:
+                ApplyEntertain(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Preach:
+                ApplyPreach(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Bribe:
+                ApplyBribe(giver, receiver, interaction);
+                break;
+
+            case InteractionType.Intimidate:
+                ApplyIntimidate(giver, receiver, interaction);
+                break;
+        }
+    }
+
+    private static void ApplyConversation(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // Placeholder.
+        // Later this can change relationships, mood, information, rumours, etc.
+        Debug.Log($"{giver.type} had a conversation with {receiver.type}");
+    }
+
+    private static void ApplyDistract(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // This is the "keep someone busy / derail their previous plan" effect.
+
+        receiver.interactionTarget = null;
+
+        receiver.isOnSpendTrip = false;
+        receiver.activeSpendBehaviourIndex = -1;
+        receiver.activeSpendAmount = 0f;
+        receiver.hasForcedSpendDestination = false;
+
+        AgentMovement.ClearPath(receiver);
+
+        receiver.movementType = MovementType.AvoidAllBuildings;
+        receiver.targetTile = Vector2Int.zero;
+        receiver.roamInsideTarget = false;
+
+        Debug.Log($"{giver.type} distracted {receiver.type}");
+    }
+
+    private static void ApplyBrawl(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        float damage = Mathf.Max(1f, interaction.value);
+
+        AgentDeath.HurtAgent(receiver, deathType.bleeding, damage);
+        AgentDeath.HurtAgent(giver, deathType.bleeding, damage * 0.5f);
+
+        AgentFear.TryTriggerFright(receiver, giver);
+        AgentFear.TryTriggerFright(giver, receiver);
+
+        Debug.Log($"{giver.type} brawled with {receiver.type}");
+    }
+
+    private static void ApplyArgument(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // Example effect: argument makes receiver more likely to leave.
+        receiver.desireToLeave = Mathf.Min(
+            receiver.MaxLeavePoints,
+            receiver.desireToLeave + interaction.value
+        );
+
+        Debug.Log($"{giver.type} argued with {receiver.type}");
+    }
+
+    private static void ApplyGossip(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // Placeholder.
+        // Later: spread rumours, fear, suspicion, attraction to locations, etc.
+        Debug.Log($"{giver.type} gossiped with {receiver.type}");
+    }
+
+    private static void ApplyEntertain(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // Placeholder.
+        // Later: increase happiness, reduce desire to leave, delay work, etc.
+        Debug.Log($"{giver.type} entertained {receiver.type}");
+    }
+
+    private static void ApplyPreach(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // Placeholder.
+        // Later: calm fear, reduce desire to leave, convert, inspire, etc.
+        Debug.Log($"{giver.type} preached to {receiver.type}");
+    }
+
+    private static void ApplyBribe(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // Placeholder.
+        // Later: transfer wealth, change loyalty, stop lawman behaviour, etc.
+        Debug.Log($"{giver.type} bribed {receiver.type}");
+    }
+
+    private static void ApplyIntimidate(Agent giver, Agent receiver, AgentInteraction interaction)
+    {
+        // Example: intimidation triggers fear logic.
+        AgentFear.TryTriggerFright(receiver, giver);
+
+        Debug.Log($"{giver.type} intimidated {receiver.type}");
+    }
+}
