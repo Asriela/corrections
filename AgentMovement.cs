@@ -55,16 +55,6 @@ public static class AgentMovement
                 agent.currentPath.Clear();
                 agent.currentSpeed = 0f;
 
-                // ✅ FIX: this is the missing trigger — arriving at a hangout tile
-                // now actually starts the roam-in-place behavior instead of just idling
-                if (agent.arriveShouldRoam)
-                {
-                    agent.roamInsideTarget = true;
-                    agent.roamTimer = agent.roamDuration;
-                    HandleInsideTileRoaming(agent);
-                    return;
-                }
-
                 agent.waitTimer = agent.pauseBetweenMoves;
                 agent.Spending.SpendTripFinishedIfNeeded();
             }
@@ -115,20 +105,6 @@ public static class AgentMovement
 
     private static void HandleInsideTileRoaming(Agent agent)
     {
-        // ✅ FIX: roaming now has a lifespan. Without this, an agent that starts
-        // roaming never returns to AgentSchedule's spend/leave checks and gets
-        // permanently parked at one building.
-        agent.roamTimer -= Time.deltaTime;
-
-        if (agent.roamTimer <= 0f)
-        {
-            agent.roamInsideTarget = false;
-            agent.arriveShouldRoam = false;
-            agent.waitTimer = agent.pauseBetweenMoves;
-            agent.Spending.SpendTripFinishedIfNeeded();
-            return;
-        }
-
         Vector3 center = AgentPathing.GridToWorld(agent, agent.targetTile);
 
         Vector2 offset = Random.insideUnitCircle * 0.3f;
@@ -154,10 +130,9 @@ public static class AgentMovement
         agent.currentSpeed = 0f;
         agent.steeringVelocity = Vector3.zero;
 
-        // ✅ FIX: anything that forces a fresh path (combat approach, spend trip, etc.)
-        // means we are no longer just idly wandering a hangout tile.
+        // ✅ anything that forces a fresh path (combat approach, spend trip, etc.)
+        // means we are no longer just idly wandering a hangout tile
         agent.roamInsideTarget = false;
-        agent.arriveShouldRoam = false;
 
         if (newPath != null)
             agent.currentPath.AddRange(newPath);
@@ -169,9 +144,8 @@ public static class AgentMovement
         agent.pathIndex = 0;
         agent.currentSpeed = 0f;
 
-        // ✅ FIX: same reasoning as SetPath — a forced clear shouldn't leave stale roam state behind
+        // ✅ a forced clear shouldn't leave stale roam state behind
         agent.roamInsideTarget = false;
-        agent.arriveShouldRoam = false;
     }
 
     public static void SetWaitTimer(Agent agent, float value)

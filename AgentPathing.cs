@@ -145,7 +145,6 @@ public static class AgentPathing
                     {
                         foundPath = true;
                         AgentMovement.SetPath(agent, spendWorldPath);
-                        agent.arriveShouldRoam = false; // spend trips don't roam, they buy and leave
                         break;
                     }
                 }
@@ -183,11 +182,7 @@ public static class AgentPathing
                 {
                     foundPath = true;
                     AgentMovement.SetPath(agent, worldPath);
-
-                    // ✅ FIX: this is the missing wire-up — only real hangout spots
-                    // (near a preferred or any building) should trigger roam-in-place on arrival
                     agent.targetTile = destination;
-                    agent.arriveShouldRoam = foundPreferred || foundAnyHangout;
                     break;
                 }
             }

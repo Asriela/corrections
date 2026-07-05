@@ -122,7 +122,6 @@ public static class AgentActions
 
         // ✅ combat targeting is mutually exclusive with hangout-roaming state
         self.roamInsideTarget = false;
-        self.arriveShouldRoam = false;
 
         Vector2Int targetTileNow = AgentPathing.WorldToGrid(self, targetPos);
         self.targetTile = targetTileNow;
@@ -316,20 +315,12 @@ public static class AgentActions
         Vector3 world = AgentPathing.GridToWorld(agent, tile);
         AgentMovement.SetPath(agent, new List<Vector3> { world });
 
-        // ✅ FIX: SetPath clears roam state as a safety default — re-apply after.
-        // This helper is for permanent placements (pen animals, etc.), not the
-        // timed hangout roam PickNewDestination uses, so it gets an indefinite
-        // roamTimer instead of agent.roamDuration — it should roam here until
-        // something else (death, re-homing) moves it out.
+        // SetPath resets roamInsideTarget as a safety default — re-apply after.
+        // This is a permanent placement (e.g. a pen animal): it roams here forever,
+        // until something else (death, re-homing) explicitly moves it out.
         agent.roamInsideTarget = roamInside;
-        agent.arriveShouldRoam = false;
 
-        if (roamInside)
-            agent.roamTimer = Mathf.Infinity;
-
-        // ✅ FIX: tells Agent.Start()/SetRole() not to overwrite this placement
-        // if Start() runs after this call (Awake runs synchronously on Instantiate,
-        // but Start() is deferred — so this can execute before Start() does).
+        // tells Agent.Start()/SetRole() not to overwrite this placement
         agent.hasExplicitPlacement = true;
     }
 }

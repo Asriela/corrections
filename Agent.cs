@@ -54,9 +54,6 @@ public class Agent : MonoBehaviour
     public MovementType movementType = MovementType.AvoidAllBuildings;
     public Vector2Int targetTile = Vector2Int.zero;
     public bool roamInsideTarget = false;
-    public bool arriveShouldRoam = false;
-    [SerializeField] public float roamDuration = 4f;
-    public float roamTimer = 0f;
 
     // ✅ NEW: set by AgentActions.MoveAgentIntoBuilding. Prevents Start()/SetRole()
     // from overwriting a deliberate placement (e.g. a pen animal) with normal wandering.
@@ -299,8 +296,6 @@ public class Agent : MonoBehaviour
         movementType = MovementType.AvoidAllBuildings;
         targetTile = Vector2Int.zero;
         roamInsideTarget = false;
-        arriveShouldRoam = false;
-        roamTimer = 0f;
     }
 
     team = data != null ? data.team : TeamType.none;
@@ -372,8 +367,6 @@ public class Agent : MonoBehaviour
         movementType = MovementType.AvoidAllBuildings;
         targetTile = Vector2Int.zero;
         roamInsideTarget = false;
-        arriveShouldRoam = false;
-        roamTimer = 0f;
         hasExplicitPlacement = false;
 
         AgentMovement.ClearPath(this);
