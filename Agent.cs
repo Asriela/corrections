@@ -144,6 +144,16 @@ public class Agent : MonoBehaviour
 
     public List<AgentTag> tags=new();
     public bool IsLeavingTown => isLeavingTown;
+
+    // ✅ NEW: which tags make this agent flee if an attacker carrying them lands a hit
+    public List<AgentTag> scaredOfTags = new();
+    public List<AgentTag> ScaredOfTags => scaredOfTags;
+
+    // ✅ NEW: fear-recovery state. Only used for residents who ran home — outsiders
+    // who leave town via AgentLeaving never come back, so they don't need this.
+    public bool isFrightened = false;
+    public Agent fearSource = null;
+    [SerializeField] public float safeDistanceFromFear = 5f;
     public bool IsLeaveFadeStarted => leaveFadeStarted;
     public Vector3 LeaveDestinationWorld => leaveDestinationWorld;
     public float MoveSpeed => moveSpeed;
@@ -213,6 +223,7 @@ public class Agent : MonoBehaviour
             return;
         }
 
+        AgentFear.UpdateFear(this);
         AgentMovement.UpdateMovement(this);
     }
 
@@ -298,11 +309,15 @@ public class Agent : MonoBehaviour
         roamInsideTarget = false;
     }
 
+    isFrightened = false;
+    fearSource = null;
+
     team = data != null ? data.team : TeamType.none;
         visualTint = data != null ? data.debugColor : Color.white;
         animationState = AnimationState.idle;
         attackVisualTimer = 0f;
         tags = data.tags;
+        scaredOfTags = data.scaredOfTags ?? new List<AgentTag>();
 
         if (data != null)
         {
@@ -368,6 +383,8 @@ public class Agent : MonoBehaviour
         targetTile = Vector2Int.zero;
         roamInsideTarget = false;
         hasExplicitPlacement = false;
+        isFrightened = false;
+        fearSource = null;
 
         AgentMovement.ClearPath(this);
         waitTimer = 0f;

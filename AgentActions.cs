@@ -231,6 +231,9 @@ public static class AgentActions
     {
         float damage = Mathf.Max(1f, interaction.value > 0f ? interaction.value : 10f);
         AgentDeath.HurtAgent(target, deathType.bleeding, damage);
+
+        // ✅ fright check happens regardless of how much damage was actually dealt
+        AgentFear.TryTriggerFright(target, self);
     }
 
     private static void ExecuteVampireBite(Agent self, Agent target, AgentInteraction interaction)
@@ -238,6 +241,9 @@ public static class AgentActions
         float damage = Mathf.Max(1f, interaction.value);
         AgentDeath.HurtAgent(target, deathType.bleeding, damage);
         self.health = Mathf.Min(100f, self.health + damage * 0.5f);
+
+        // ✅ same fright check as combat — this also deals damage
+        AgentFear.TryTriggerFright(target, self);
     }
 
     private static void ExecuteSwoon(Agent target, AgentInteraction interaction)
