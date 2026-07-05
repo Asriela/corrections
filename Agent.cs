@@ -58,6 +58,10 @@ public class Agent : MonoBehaviour
     [SerializeField] public float roamDuration = 4f;
     public float roamTimer = 0f;
 
+    // ✅ NEW: set by AgentActions.MoveAgentIntoBuilding. Prevents Start()/SetRole()
+    // from overwriting a deliberate placement (e.g. a pen animal) with normal wandering.
+    public bool hasExplicitPlacement = false;
+
     [Header("Movement Variation")]
     [SerializeField] public float speedVariationStrength = 0.35f;
     [SerializeField] public float speedVariationSpeed = 1.75f;
@@ -182,7 +186,11 @@ public class Agent : MonoBehaviour
     {
         lastFramePosition = transform.position;
         InClearAllStatTypes();
-        SetRole(type);
+
+        // ✅ FIX: if something already placed this agent (e.g. a pen animal spawned
+        // and placed in the same frame, before Start() ran), don't let the normal
+        // role-setup / wander-pick logic below undo it.
+        SetRole(type, preservePlacement: hasExplicitPlacement);
 
         if (isDead)
         {
@@ -190,7 +198,8 @@ public class Agent : MonoBehaviour
             return;
         }
 
-        AgentPathing.PickNewDestination(this);
+        if (!hasExplicitPlacement)
+            AgentPathing.PickNewDestination(this);
     }
 
     private void Update()
@@ -255,7 +264,7 @@ public class Agent : MonoBehaviour
     {
         return tags.Contains(tag);
     }
-    public void SetRole(AgentType newType)
+    public void SetRole(AgentType newType, bool preservePlacement = false)
     {
         AgentActions.DeregisterTeamMember(this);
 
@@ -283,12 +292,16 @@ public class Agent : MonoBehaviour
     interactionCooldownTimers = new List<float>();
    interactionTarget = null;
 
-    // ✅ NEW: don't let a stale movement/roam state survive a role swap
-    movementType = MovementType.AvoidAllBuildings;
-    targetTile = Vector2Int.zero;
-    roamInsideTarget = false;
-    arriveShouldRoam = false;
-    roamTimer = 0f;
+    // ✅ don't let a stale movement/roam state survive a role swap —
+    // unless the caller explicitly wants to keep a placement (e.g. pen animal spawn)
+    if (!preservePlacement)
+    {
+        movementType = MovementType.AvoidAllBuildings;
+        targetTile = Vector2Int.zero;
+        roamInsideTarget = false;
+        arriveShouldRoam = false;
+        roamTimer = 0f;
+    }
 
     team = data != null ? data.team : TeamType.none;
         visualTint = data != null ? data.debugColor : Color.white;
@@ -355,12 +368,13 @@ public class Agent : MonoBehaviour
         interactionCooldownTimers = new List<float>();
         interactionTarget = null;
 
-        // ✅ NEW: same reason as SetRole — a dead agent shouldn't carry roam/combat state
+        // ✅ same reason as SetRole — a dead agent shouldn't carry roam/combat state
         movementType = MovementType.AvoidAllBuildings;
         targetTile = Vector2Int.zero;
         roamInsideTarget = false;
         arriveShouldRoam = false;
         roamTimer = 0f;
+        hasExplicitPlacement = false;
 
         AgentMovement.ClearPath(this);
         waitTimer = 0f;

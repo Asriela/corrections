@@ -116,51 +116,77 @@ public static class AgentActions
         Vector3 selfPos = self.transform.position;
         Vector3 targetPos = target.transform.position;
 
-        float yDiff = Mathf.Abs(selfPos.y - targetPos.y);
-        float xDiff = Mathf.Abs(selfPos.x - targetPos.x);
+        self.movementType = interaction.canEnterTargetBuilding
+            ? MovementType.AllowTargetBuildingOnly
+            : MovementType.AvoidAllBuildings;
 
-        // ✅ already aligned
-        if (yDiff <= interaction.alignmentTolerance && xDiff <= interaction.range)
-        {
-            self.Visuals.UpdateFacingFromDirection(targetPos - selfPos);
-            return;
-        }
-
-        // ✅ combat stand-off positioning
-        float side = selfPos.x <= targetPos.x ? -1f : 1f;
-        if (Mathf.Abs(selfPos.x - targetPos.x) < 0.001f)
-            side = 1f;
-
-        Vector3 desiredPosition = new Vector3(
-            targetPos.x + (side * interaction.standOffDistance),
-            targetPos.y,
-            selfPos.z
-        );
-
-        Vector2Int tile = AgentPathing.WorldToGrid(self, targetPos);
-
-        if (interaction.canEnterTargetBuilding)
-        {
-            self.movementType = MovementType.AllowTargetBuildingOnly;
-        }
-        else
-        {
-            self.movementType = MovementType.AvoidAllBuildings;
-        }
-
-        self.targetTile = tile;
-
-        // ✅ FIX: combat targeting is mutually exclusive with hangout-roaming state
+        // ✅ combat targeting is mutually exclusive with hangout-roaming state
         self.roamInsideTarget = false;
         self.arriveShouldRoam = false;
 
-        if (!AgentPathing.TryGetCurrentPathTarget(self, out Vector3 currentPathTarget) ||
-            (currentPathTarget - desiredPosition).sqrMagnitude > 0.05f)
+        Vector2Int targetTileNow = AgentPathing.WorldToGrid(self, targetPos);
+        self.targetTile = targetTileNow;
+
+        if (interaction.canEnterTargetBuilding)
         {
-            AgentMovement.SetPath(self, new List<Vector3> { desiredPosition });
+            // ✅ FIX: the target lives inside a building tile (e.g. a pig in its pen) —
+            // route around every OTHER building to reach it instead of walking in a
+            // straight line through walls.
+            ApproachTileByPathfinding(self, targetTileNow, targetPos, interaction);
+        }
+        else
+        {
+            // Open-field combat: already aligned?
+            float yDiff = Mathf.Abs(selfPos.y - targetPos.y);
+            float xDiff = Mathf.Abs(selfPos.x - targetPos.x);
+
+            if (yDiff <= interaction.alignmentTolerance && xDiff <= interaction.range)
+            {
+                self.Visuals.UpdateFacingFromDirection(targetPos - selfPos);
+                return;
+            }
+
+            // ✅ combat stand-off positioning
+            float side = selfPos.x <= targetPos.x ? -1f : 1f;
+            if (Mathf.Abs(selfPos.x - targetPos.x) < 0.001f)
+                side = 1f;
+
+            Vector3 desiredPosition = new Vector3(
+                targetPos.x + (side * interaction.standOffDistance),
+                targetPos.y,
+                selfPos.z
+            );
+
+            if (!AgentPathing.TryGetCurrentPathTarget(self, out Vector3 currentPathTarget) ||
+                (currentPathTarget - desiredPosition).sqrMagnitude > 0.05f)
+            {
+                AgentMovement.SetPath(self, new List<Vector3> { desiredPosition });
+            }
         }
 
         self.Visuals.UpdateFacingFromDirection(targetPos - selfPos);
+    }
+
+    // ✅ NEW: used when an interaction allows entering the target's building tile.
+    // Avoids re-pathing every tick by only recomputing when the goal tile actually changes.
+    private static void ApproachTileByPathfinding(Agent self, Vector2Int goalTile, Vector3 targetWorldPos, AgentInteraction interaction)
+    {
+        if (Vector3.Distance(self.transform.position, targetWorldPos) <= interaction.range)
+            return;
+
+        Vector2Int currentDestinationTile = self.currentPath.Count > 0
+            ? AgentPathing.WorldToGrid(self, self.currentPath[self.currentPath.Count - 1])
+            : goalTile;
+
+        bool needsNewPath = self.currentPath.Count == 0 || currentDestinationTile != goalTile;
+
+        if (!needsNewPath)
+            return;
+
+        if (AgentPathing.TryFindPathToTile(self, goalTile, out List<Vector3> worldPath))
+        {
+            AgentMovement.SetPath(self, worldPath);
+        }
     }
 
     // =====================================================
@@ -300,5 +326,10 @@ public static class AgentActions
 
         if (roamInside)
             agent.roamTimer = Mathf.Infinity;
+
+        // ✅ FIX: tells Agent.Start()/SetRole() not to overwrite this placement
+        // if Start() runs after this call (Awake runs synchronously on Instantiate,
+        // but Start() is deferred — so this can execute before Start() does).
+        agent.hasExplicitPlacement = true;
     }
 }

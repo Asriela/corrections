@@ -85,6 +85,27 @@ public static class AgentPathing
         return true;
     }
 
+    // ✅ NEW: lets AgentActions route a chasing agent (e.g. a fox) around every
+    // building except the one at goalTile, respecting agent.movementType.
+    public static bool TryFindPathToTile(Agent agent, Vector2Int goalTile, out List<Vector3> worldPath)
+    {
+        worldPath = new List<Vector3>();
+
+        if (agent == null || GameManager.Instance == null)
+            return false;
+
+        Vector2Int startTile = WorldToGrid(agent, agent.transform.position);
+
+        if (startTile == goalTile)
+            return false;
+
+        if (!TryFindPath(agent, startTile, goalTile, allowBlockedTiles: false, out List<Vector2Int> tilePath))
+            return false;
+
+        worldPath = ConvertToWorld(agent, tilePath);
+        return worldPath.Count > 0;
+    }
+
     // ───────── DESTINATION PICKING ─────────
 
     public static void PickNewDestination(Agent agent)
