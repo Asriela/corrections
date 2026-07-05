@@ -7,5 +7,31 @@ public List<AgentTag> scaredOfTags;
 [Header("Social Interaction State")]
 public AgentSocialInteractions.ActiveSocialInteraction currentSocialInteraction = null;
 public bool IsInSocialInteraction => currentSocialInteraction != null;
+
+===========================
 In SetRole() and SetDeadState(), also add:
 C#currentSocialInteraction = null;
+=============================
+
+
+public enum InteractionType
+{
+    // Instant / physical interactions
+    Combat,
+    VampireBite,
+    Swoon,
+    Heal,
+    Convert,
+    FleeFrom,
+
+    // Social / timed interactions
+    Conversation,
+    Distract,
+    Brawl,
+    Argument,
+    Gossip,
+    Entertain,
+    Preach,
+    Bribe,
+    Intimidate
+}
