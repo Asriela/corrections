@@ -1,2 +1,11 @@
 [Header("Fear")]
 public List<AgentTag> scaredOfTags;
+
+
+
+
+[Header("Social Interaction State")]
+public AgentSocialInteractions.ActiveSocialInteraction currentSocialInteraction = null;
+public bool IsInSocialInteraction => currentSocialInteraction != null;
+In SetRole() and SetDeadState(), also add:
+C#currentSocialInteraction = null;
