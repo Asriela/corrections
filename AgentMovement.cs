@@ -24,20 +24,25 @@ public static class AgentMovement
 
         if (agent.currentPath.Count == 0 || agent.pathIndex >= agent.currentPath.Count)
         {
-            // ✅ roaming near the hangout tile we already arrived at
             if (agent.roamInsideTarget)
             {
-                HandleInsideTileRoaming(agent);
+                // picks ONE new point inside the tile, then falls through to the
+                // normal steering/acceleration code below — same movement feel as
+                // regular wandering, just confined to a small radius around the tile.
+                // On arrival, the usual arrival branch further down handles the
+                // pause + hands back here for the next hop, same as classic hangout hopping.
+                BeginNewRoamHop(agent);
+            }
+            else
+            {
+                AgentPathing.PickNewDestination(agent);
+
+                agent.lastFramePosition = agent.transform.position;
+                agent.stuckTimer = 0f;
+                agent.lastDistanceToTarget = -1f;
+                agent.hasDistanceSample = false;
                 return;
             }
-
-            AgentPathing.PickNewDestination(agent);
-
-            agent.lastFramePosition = agent.transform.position;
-            agent.stuckTimer = 0f;
-            agent.lastDistanceToTarget = -1f;
-            agent.hasDistanceSample = false;
-            return;
         }
 
         Vector3 target = agent.currentPath[agent.pathIndex];
@@ -103,21 +108,23 @@ public static class AgentMovement
         agent.lastFramePosition = agent.transform.position;
     }
 
-    private static void HandleInsideTileRoaming(Agent agent)
+    private static void BeginNewRoamHop(Agent agent)
     {
         Vector3 center = AgentPathing.GridToWorld(agent, agent.targetTile);
 
         Vector2 offset = Random.insideUnitCircle * 0.3f;
-        Vector3 target = center + new Vector3(offset.x, offset.y, 0f);
+        Vector3 point = center + new Vector3(offset.x, offset.y, 0f);
+        point.z = agent.transform.position.z;
 
-        Vector3 dir = target - agent.transform.position;
+        agent.currentPath.Clear();
+        agent.currentPath.Add(point);
+        agent.pathIndex = 0;
+        agent.currentSpeed = 0f;
+        agent.steeringVelocity = Vector3.zero;
 
-        if (dir.sqrMagnitude > 0.001f)
-        {
-            dir.Normalize();
-            agent.transform.position += dir * (agent.moveSpeed * 0.3f) * Time.deltaTime;
-            agent.Visuals.UpdateFacingFromDirection(dir);
-        }
+        // roamInsideTarget is deliberately left as-is here (not touched) —
+        // that's what makes the arrival branch below loop back into another
+        // hop instead of calling PickNewDestination once this point is reached.
     }
 
     public static void SetPath(Agent agent, List<Vector3> newPath)
