@@ -1,0 +1,232 @@
+Yes. This shows that `MoveTowardTarget()` currently runs only when the **interaction decision timer** completes:
+
+```csharp
+if (agent.interactionTickAccumulator < agent.interactionDecisionInterval)
+    return;
+```
+
+Therefore, even if `RunSchedules()` is called every frame, this line:
+
+```csharp
+AgentActions.MoveTowardTarget(
+    agent,
+    agent.interactionTarget,
+    chosenInteraction
+);
+```
+
+runs only once every:
+
+```csharp
+agent.interactionDecisionInterval
+```
+
+seconds.
+
+For example:
+
+* `interactionDecisionInterval = 1f` → updates once per second.
+* `interactionDecisionInterval = 0.5f` → updates twice per second.
+* `interactionDecisionInterval = 0.1f` → updates ten times per second.
+
+So currently, **the direct close-range tracking would not necessarily update every frame**. It would update only on the interaction decision ticks, which explains why the fox aims at the pig’s previous position.
+
+## Correct structure
+
+The expensive interaction decision and target selection should remain on the slower timer. But once a target has been selected, close-range direct following should update every time `UpdateInteractionSchedule()` runs.
+
+To do that properly, the agent needs to remember which interaction it is currently pursuing.
+
+### Add these fields to `Agent`
+
+```csharp
+public AgentInteraction activeInteraction;
+public int activeInteractionIndex = -1;
+```
+
+Then replace `UpdateInteractionSchedule()` with this version:
+
+```csharp
+public void UpdateInteractionSchedule()
+{
+    if (agent.isDead || agent.isLeavingTown)
+    {
+        ResetAllInteractionState();
+        return;
+    }
+
+    var data = AgentData.Instance?.GetAgent(agent.type);
+
+    if (data == null ||
+        data.interactions == null ||
+        data.interactions.Count == 0)
+    {
+        return;
+    }
+
+    // Keep timer list synchronized first.
+    while (agent.interactionCooldownTimers.Count < data.interactions.Count)
+        agent.interactionCooldownTimers.Add(0f);
+
+    // Advance cooldown timers every frame.
+    for (int i = 0; i < agent.interactionCooldownTimers.Count; i++)
+    {
+        if (agent.interactionCooldownTimers[i] > 0f)
+        {
+            agent.interactionCooldownTimers[i] = Mathf.Max(
+                0f,
+                agent.interactionCooldownTimers[i] - Time.deltaTime
+            );
+        }
+    }
+
+    // Validate the current target every frame.
+    if (agent.interactionTarget != null)
+    {
+        bool invalidTarget =
+            agent.interactionTarget.isDead ||
+            agent.interactionTarget.IsLeavingTown ||
+            agent.activeInteraction == null ||
+            !AgentActions.AgentHasAnyTag(
+                agent.interactionTarget,
+                agent.activeInteraction.targetTags
+            );
+
+        if (invalidTarget)
+        {
+            agent.interactionTarget = null;
+            agent.activeInteraction = null;
+            agent.activeInteractionIndex = -1;
+        }
+    }
+
+    // Follow an already-selected target every frame.
+    if (agent.interactionTarget != null &&
+        agent.activeInteraction != null)
+    {
+        AgentActions.MoveTowardTarget(
+            agent,
+            agent.interactionTarget,
+            agent.activeInteraction
+        );
+
+        if (AgentActions.IsInInteractionRange(
+                agent,
+                agent.interactionTarget,
+                agent.activeInteraction.range))
+        {
+            AgentActions.ExecuteInteraction(
+                agent,
+                agent.interactionTarget,
+                agent.activeInteraction
+            );
+
+            if (agent.activeInteractionIndex >= 0 &&
+                agent.activeInteractionIndex <
+                agent.interactionCooldownTimers.Count)
+            {
+                agent.interactionCooldownTimers[
+                    agent.activeInteractionIndex
+                ] = agent.activeInteraction.cooldown;
+            }
+
+            if (agent.interactionTarget == null ||
+                agent.interactionTarget.isDead ||
+                agent.interactionTarget.IsLeavingTown)
+            {
+                agent.interactionTarget = null;
+            }
+
+            agent.activeInteraction = null;
+            agent.activeInteractionIndex = -1;
+        }
+
+        // Do not perform another target-selection decision this frame.
+        return;
+    }
+
+    // Target selection remains on the slower decision timer.
+    agent.interactionTickAccumulator += Time.deltaTime;
+
+    if (agent.interactionTickAccumulator <
+        agent.interactionDecisionInterval)
+    {
+        return;
+    }
+
+    agent.interactionTickAccumulator = 0f;
+
+    AgentInteraction chosenInteraction = null;
+    int chosenIndex = -1;
+    int bestPriority = int.MinValue;
+
+    for (int i = 0; i < data.interactions.Count; i++)
+    {
+        AgentInteraction interaction = data.interactions[i];
+
+        if (agent.interactionCooldownTimers[i] > 0f)
+            continue;
+
+        if (Random.value > interaction.chance)
+            continue;
+
+        if (interaction.priority > bestPriority)
+        {
+            bestPriority = interaction.priority;
+            chosenInteraction = interaction;
+            chosenIndex = i;
+        }
+    }
+
+    if (chosenInteraction == null)
+        return;
+
+    Agent target = AgentActions.PickInteractionTarget(
+        agent,
+        chosenInteraction
+    );
+
+    if (target == null)
+        return;
+
+    // Remember the selected target and interaction.
+    agent.interactionTarget = target;
+    agent.activeInteraction = chosenInteraction;
+    agent.activeInteractionIndex = chosenIndex;
+
+    // Begin movement immediately instead of waiting for another frame.
+    AgentActions.MoveTowardTarget(
+        agent,
+        agent.interactionTarget,
+        agent.activeInteraction
+    );
+}
+```
+
+Update the reset method too:
+
+```csharp
+private void ResetAllInteractionState()
+{
+    agent.interactionTarget = null;
+    agent.activeInteraction = null;
+    agent.activeInteractionIndex = -1;
+    agent.interactionTickAccumulator = 0f;
+
+    for (int i = 0; i < agent.interactionCooldownTimers.Count; i++)
+        agent.interactionCooldownTimers[i] = 0f;
+}
+```
+
+## Result
+
+Assuming `RunSchedules()` itself is called every frame:
+
+* Interaction selection remains slow and uses `interactionDecisionInterval`.
+* The fox remembers the selected pig.
+* The fox’s movement toward that pig updates every frame.
+* When far away, your ordinary pursuit/path logic runs.
+* When within `directChaseDistance`, the destination follows the pig’s latest position every frame.
+* Other creatures without an active interaction target continue their normal journeys unchanged.
+
+So yes: this code reveals the issue—`MoveTowardTarget()` currently runs only once per interaction decision interval, not every frame.
