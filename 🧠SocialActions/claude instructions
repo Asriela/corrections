@@ -1,0 +1,43 @@
+We are splitting the old AgentActions class because it mixes unrelated responsibilities. ActionManager will manage the shared agent-to-agent workflow—selecting an action and target, approaching, aligning, executing, tracking cooldowns, and cancelling. Individual SocialActions will contain only their unique effects. Team registration, trading, and building placement move into dedicated classes. This makes the system easier to maintain and allows the scheduler to prioritize social actions against sleeping, shopping, and leaving town.
+
+
+THE STEPS:
+A) RENAME actions class TO actions manager (I did this)
+B) REWORK who does what (claude)
+C) put all actions in SocialActions class (claude)
+D) REWORK SCHEDUALER (claude)
+E) test
+
+THE NEW CLASSES STRUCTURE
+ActionManager
+├── action selection
+├── target selection
+├── target validation
+├── movement
+├── alignment
+├── range detection
+├── cooldown management
+├── active plan management
+└── cancellation
+
+SocialActions
+├── CombatAction
+├── VampireBiteAction
+├── BarFightAction
+├── HealAction
+├── SwoonAction
+├── ConvertAction
+├── FleeAction
+└── HarvestAnimalAction
+
+AgentTeams
+├── TeamMembers
+├── RegisterTeamMember
+└── DeregisterTeamMember
+
+AgentTrading
+├── HandleClick
+└── TradeFoodWithFoodTrader
+
+AgentPlacement
+└── MoveAgentIntoBuilding
