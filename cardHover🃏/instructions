@@ -1,0 +1,15 @@
+The scaling itself isn't the real problem — it's that the hitbox that receives pointer events grows with the visual, since CardHover scales the same RectTransform that Unity's raycaster uses for hit-testing. When it scales up, its footprint now overlaps neighboring cards, so their raycast target gets covered and they never get OnPointerEnter.
+
+The fix is to separate "what gets hit-tested" from "what gets scaled visually":
+
+In the Card prefab, create an empty child object called Visual and move all the visible parts (card image, edge image, labels) under it.
+Make sure only the root object's graphic (or an invisible full-size Image on the root) has Raycast Target = true. Turn Raycast Target off on all the Images inside Visual. That way the clickable/hoverable area is always the root's fixed-size rect — the enlarged visual just renders on top without intercepting the pointer.
+CardHover then scales/lifts Visual, not the root RectTransform.
+
+Here's the updated component:
+
+CardHover.cs
+
+Note CardHand.ArrangeCards() currently checks hover.IsHovered and skips repositioning the root rt.anchoredPosition for the hovered card — that logic still works fine unchanged, since it's still governing the root's layout position, not the visual offset.
+
+One thing to double check: CardDrag also reads/writes rectTransform.anchoredPosition/localScale on the same root object for drag shrink/snap-back — since that's still the root and untouched by hover now, there's no conflict there.
