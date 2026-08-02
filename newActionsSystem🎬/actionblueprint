@@ -1,0 +1,18 @@
+Agent.Update()
+│
+├── AgentSchedule.RunSchedules()
+│       │
+│       ├── ActionManager.UpdateActions()
+│       │       │
+│       │       ├── Select target
+│       │       ├── Select interaction
+│       │       ├── Move toward target
+│       │       ├── Check range
+│       │       └── SocialActions.Execute()
+│       │
+│       ├── Spending Schedule
+│       └── Leaving Schedule
+│
+├── AgentFear.UpdateFear()
+├── AgentMovement.UpdateMovement()
+└── AgentVisuals.UpdateVisualState()
