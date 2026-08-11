@@ -3,15 +3,15 @@ using UnityEngine.EventSystems;
 
 public class CardHover : MonoBehaviour, IPointerEnterHandler, IPointerExitHandler
 {
-    [Header("Visual Target")]
-    [Tooltip("Child object holding the visible card art/text — NOT the root RectTransform. Scaling this instead of the root keeps the hoverable hitbox fixed-size.")]
+    [Header("Visual Target — the child rect, NOT the root")]
+    [Tooltip("Assign the 'Visual' child RectTransform here. Scaling this instead of the root keeps the BoxCollider2D on the root fixed-size, so hover growth can't steal neighbors' raycasts.")]
     [SerializeField] private RectTransform visualRoot;
 
     [Header("Hover Settings")]
     [SerializeField] private float hoverLift = 150f;
     [SerializeField] private float hoverScale = 1.1f;
 
-    private RectTransform rt;
+    private RectTransform rootRect;
     private Vector2 originalVisualPos;
     private Vector3 originalVisualScale;
     private int originalSibling;
@@ -20,12 +20,12 @@ public class CardHover : MonoBehaviour, IPointerEnterHandler, IPointerExitHandle
 
     private void Awake()
     {
-        rt = GetComponent<RectTransform>();
+        rootRect = GetComponent<RectTransform>();
 
         if (visualRoot == null)
         {
-            Debug.LogWarning($"CardHover on {name}: visualRoot not assigned, falling back to root transform (will cause hitbox overlap).");
-            visualRoot = rt;
+            Debug.LogError($"CardHover on {name}: 'visualRoot' is not assigned — hover will scale the collider again. Assign the 'Visual' child in the Inspector.");
+            visualRoot = rootRect; // fallback, but this reintroduces the bug
         }
     }
 
@@ -36,11 +36,11 @@ public class CardHover : MonoBehaviour, IPointerEnterHandler, IPointerExitHandle
         IsHovered = true;
         originalVisualPos = visualRoot.anchoredPosition;
         originalVisualScale = visualRoot.localScale;
-        originalSibling = rt.GetSiblingIndex();
+        originalSibling = rootRect.GetSiblingIndex();
 
-        // Bring the whole card forward so the enlarged visual renders above neighbors,
-        // but this does NOT change the root's size/hitbox.
-        rt.SetAsLastSibling();
+        // Bring whole card forward in sibling order so the bigger visual renders
+        // above neighbors — root position/scale (and collider) untouched.
+        rootRect.SetAsLastSibling();
 
         visualRoot.anchoredPosition = originalVisualPos + Vector2.up * hoverLift;
         visualRoot.localScale = originalVisualScale * hoverScale;
@@ -53,7 +53,7 @@ public class CardHover : MonoBehaviour, IPointerEnterHandler, IPointerExitHandle
         IsHovered = false;
         visualRoot.anchoredPosition = originalVisualPos;
         visualRoot.localScale = originalVisualScale;
-        rt.SetSiblingIndex(originalSibling);
+        rootRect.SetSiblingIndex(originalSibling);
 
         CardHand.Instance?.ArrangeCards();
     }
