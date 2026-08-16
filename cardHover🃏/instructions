@@ -1,27 +1,9 @@
-Right — looking at the actual prefab, my fix assumed a `Visual` child wrapper that doesn't exist. Your real structure is flatter and the actual bug is different from what I diagnosed.
+Prefab changes (on your Card prefab):
 
-**What's actually going on:**
-
-The `Card` root object has, all as siblings/direct components on the *same* Transform:
-- `RectTransform` (localScale 2.5, 2.5 — this is what `CardHover` scales)
-- `SpriteRenderer` (the card's world-space art)
-- `BoxCollider2D` (size 0.76 × 1.09 — this is what `CardDrag`'s `Physics2D.Raycast` hits)
-- All the UI children (Image, EdgeImage, text labels) parented directly under it
-
-`CardHover.OnPointerEnter` scales `rt.localScale` on the **root** transform. Since `BoxCollider2D` lives on that same root GameObject, scaling the root scales the collider's effective world-space bounds too (Unity 2D colliders scale with their Transform). So when a card hovers and grows, its physics collider grows right along with it, swallows the neighbor's position, and now raycasts from the neighbor's mouse position hit the wrong card — blocking its `OnPointerEnter`.
-
-The fix has to separate "the thing whose Transform the collider/raycast depends on" from "the thing that visually grows." That means restructuring the prefab, not just the script — there's no way to fix this in code alone while collider and visuals share one Transform.
-
-**Prefab restructure (do this in the Unity Editor):**
-
-1. On the `Card` prefab root, create an empty child GameObject, name it `Visual`, add a `RectTransform` to it (Unity does this automatically for UI children). Reset its anchored position to `(0,0)`, scale to `(1,1,1)`, and set its size delta to match the root's (`189.6819 x 249.5521`) with anchors `0.5, 0.5` — basically clone the root's rect settings so it fills the same space.
-2. Drag these existing children under `Visual`: `Image`, `Image (1)`, `EdgeImage`, `cardNumber`, `price`, `cardName`, `cardDescript`.
-3. The `SpriteRenderer` component is trickier since it's *on* the root GameObject, not a child — right-click that component in the Inspector → **Move to another GameObject** (or just delete it and re-add an equivalent `SpriteRenderer` on `Visual` if that context menu isn't available in your Editor version) and re-drag the sprite/sorting layer values across.
-4. `BoxCollider2D` and `Card`/`CardDrag`/`CardHover` scripts **stay on the root** — untouched, unscaled.
-5. On `CardHover`, drag `Visual`'s RectTransform into the new `visualRoot` field.
-
-
-
-`CardHand.ArrangeCards()` and `CardDrag` don't need changes — they already operate on the root `RectTransform`, which now correctly stays fixed-size at all times.
-
-One thing to sanity check once you've moved things: confirm whatever raycaster is feeding these `IPointerEnter/Exit` calls (sounds like a `Physics2DRaycaster` on your camera, given the `BoxCollider2D` + `SpriteRenderer` combo) is still only seeing the root's collider — i.e. don't accidentally add a collider to `Visual` too.
+On the root Card GameObject itself (the one with RectTransform, Card, CardDrag, CardHover, BoxCollider2D) — 
+add an Image component. Source Image = None, Color alpha = 0, Raycast Target ✓. This becomes the stationary hit-target for UI hover, 
+same size as the card's own RectTransform, same idea as your fixed-size BoxCollider2D but for the UI raycaster instead of Physics2D.
+Under visual, uncheck Raycast Target on: Image (cardImage), EdgeImage (cardEdgeImage), and the four TMP labels — cardName, cardNumber, 
+price, cardDescript. Looking at your prefab YAML, those TMP labels currently have m_RaycastTarget: 1, which was almost certainly 
+contributing to the flicker too, since text bounding boxes count as raycast surfaces. The new Awake() code will force all of these to false at runtime regardless, 
+but fixing it in the prefab makes it correct in the editor too rather than relying purely on a runtime patch.
