@@ -16,3 +16,471 @@ Agent.Update()
 ├── AgentFear.UpdateFear()
 ├── AgentMovement.UpdateMovement()
 └── AgentVisuals.UpdateVisualState()
+
+
+# Boom Town — ActionState Refactor Handoff
+
+## Context
+Unity frontier-town roguelike. Aseprite-imported animations, each animation = its
+own `RuntimeAnimatorController` swapped onto a shared `Animator` component (not
+states within one controller — literal controller-swapping).
+
+## The core design decision (final, do not re-litigate)
+
+Three layers, not one:
+
+- **Task** — the big multi-step thing an agent is engaged in. Already exists as
+  loose flags/objects: `ActionManager.HasActivePlan`, `agent.isLeavingTown`,
+  `agent.isOnSpendTrip`, `agent.isFrightened`. Not being unified into an enum —
+  that's scope creep. Leave these as-is.
+- **Action** — the single verb happening this instant: idle, walking, attack,
+  purchase, chat, etc. This is the NEW layer. One canonical owner:
+  `AgentActionState`.
+- **Animation** — not a state at all. A pure lookup derived from Action, via
+  `AnimationLookup` (e.g. `laugh` and `debate` can both resolve to the `talk`
+  clip). `AgentAnimations` just plays whatever key it's told, no opinions.
+
+## THE hard rule (this is the whole point of this refactor)
+
+**No class writes `agent.transform.position` or touches the `Animator` directly.
+Ever. Every class that wants to move the agent OR change its animation must
+submit a `Proposition` to `AgentActionState.EvaluateProposition` first, and
+only act if it's accepted.**
+
+This isn't a style preference — it's fixing two real bugs that already happened
+from classes moving the agent without asking (see "Bugs already found" below).
+The goal is to make bypassing the gate structurally awkward, not just
+undocumented.
+
+### Vocabulary (FINAL — do not use older Propose/ProposeOneShot/ProposeLooping naming)
+
+- **`PriorityTier`** — enum, not raw ints. Spaced by 10 so callers can offset
+  within a tier (e.g. `PriorityTier.Social + 3`) without colliding into the
+  next tier up:
+```csharp
+public enum PriorityTier
+{
+    Idle = 0,
+    Movement = 10,
+    Social = 20,
+    Combat = 30,
+    Critical = 90,
+    Death = 100
+}
+```
+- **`PropositionType`** — enum: `Continuous` (walking/idle, asked every frame,
+  no lock), `OneShot` (attack/purchase, locks for its own clip's length, then
+  auto-releases), `Looping` (chat, locks until `Release()` is explicitly
+  called).
+- **`Proposition`** — struct a caller builds: `{ AgentAction action; int
+  priority; PropositionType type; }`.
+- **`AgentActionState.EvaluateProposition(Proposition)`** — the ONE method
+  every caller goes through. Returns `bool` — accepted or denied, nothing
+  more. `ActionState` does not track or suggest retry timing; if a caller
+  wants to back off before proposing again (rather than just retrying next
+  frame), that's the caller's own concern to implement, not the gate's.
+
+### The flow, precisely
+
+1. A class wants to do something. It builds a `Proposition` (action + priority
+   + type) and calls `agent.Visuals.EvaluateProposition(proposition)`.
+2. `AgentActionState` compares `proposition.priority` against whatever's
+   currently locked.
+   - Loses → returns `false`. Caller does **nothing** — no position write, no
+     animation change, no side effect (see SocialActions note below). If the
+     caller wants to retry later rather than every frame, it manages that
+     backoff itself — the gate doesn't help with this.
+   - Wins (or nothing is locked, or it's the same action already playing) →
+     `AgentActionState` updates its own current-action/priority/lock state,
+     tells `AgentAnimations` to play the right clip via `AnimationLookup`
+     (mechanics differ slightly by `PropositionType`, see reference
+     implementation below), and returns `true`. Caller proceeds with the
+     actual write (movement delta, etc.) THIS SAME FRAME.
+
+### Reference implementation (use this exact shape, not a reinvention)
+
+```csharp
+public struct Proposition
+{
+    public AgentAction action;
+    public int priority;
+    public PropositionType type;
+
+    public Proposition(AgentAction action, int priority, PropositionType type)
+    {
+        this.action = action;
+        this.priority = priority;
+        this.type = type;
+    }
+}
+
+public struct PropositionResult
+{
+    public bool accepted;
+    public float retryAfter;
+
+    public static PropositionResult Accept() => new PropositionResult { accepted = true, retryAfter = 0f };
+    public static PropositionResult Deny(float retryAfter) => new PropositionResult { accepted = false, retryAfter = retryAfter };
+}
+
+public class AgentActionState
+{
+    private readonly Agent agent;
+    private readonly AgentAnimations animations;
+
+    private AgentAction currentAction = AgentAction.idle;
+    private int currentPriority = int.MinValue;
+    private float lockedUntil = -1f;
+    private bool isLooping = false;
+
+    public AgentAction CurrentAction => currentAction;
+    public bool IsLocked => isLooping || Time.time < lockedUntil;
+
+    public AgentActionState(Agent agent, Animator animator)
+    {
+        this.agent = agent;
+        animations = new AgentAnimations(agent, animator);
+    }
+
+    public void Init()
+    {
+        currentAction = AgentAction.idle;
+        currentPriority = int.MinValue;
+        lockedUntil = -1f;
+        isLooping = false;
+        animations.Init();
+    }
+
+    public PropositionResult EvaluateProposition(Proposition proposition)
+    {
+        ResolveExpiry();
+
+        bool sameAction = proposition.action == currentAction;
+
+        if (IsLocked && proposition.priority < currentPriority && !sameAction)
+        {
+            float retryAfter = isLooping ? -1f : Mathf.Max(0f, lockedUntil - Time.time);
+            return PropositionResult.Deny(retryAfter);
+        }
+
+        currentAction = proposition.action;
+        currentPriority = proposition.priority;
+
+        switch (proposition.type)
+        {
+            case PropositionType.OneShot:
+                isLooping = false;
+                string key = AnimationLookup.GetAnimationKey(proposition.action);
+                lockedUntil = Time.time + animations.GetClipDuration(key);
+                animations.Play(key, forceRestart: true);
+                break;
+
+            case PropositionType.Looping:
+                isLooping = true;
+                lockedUntil = -1f;
+                animations.Play(AnimationLookup.GetAnimationKey(proposition.action), forceRestart: true);
+                break;
+
+            case PropositionType.Continuous:
+            default:
+                if (!sameAction)
+                {
+                    isLooping = false;
+                    lockedUntil = -1f;
+                    animations.Play(AnimationLookup.GetAnimationKey(proposition.action), forceRestart: false);
+                }
+                break;
+        }
+
+        return PropositionResult.Accept();
+    }
+
+    public void Release()
+    {
+        isLooping = false;
+        lockedUntil = -1f;
+        currentPriority = int.MinValue;
+    }
+
+    private void ResolveExpiry()
+    {
+        if (!isLooping && lockedUntil >= 0f && Time.time >= lockedUntil)
+        {
+            currentPriority = int.MinValue;
+            lockedUntil = -1f;
+        }
+    }
+}
+```
+
+`AgentVisuals` forwards exactly one method (plus `Release`/`CurrentAction`):
+```csharp
+public PropositionResult EvaluateProposition(Proposition proposition)
+    => actionState.EvaluateProposition(proposition);
+```
+
+### ⚠️ Continuous propositions have NO auto-expiry — every owner needs its own end-trigger
+
+Unlike `OneShot` (expires via clip length) and `Looping` (expires via explicit
+`Release()`), `Continuous` has no built-in mechanism to end itself.
+`ActionState` only reacts to propositions it's actively handed — it has no way
+to notice that a caller has *stopped* proposing something, so a `Continuous`
+action is not a durable state that persists once proposed. It's a live report
+of "this is still true right now," and it stays true only for as long as
+someone keeps proposing it every frame.
+
+**This is a general rule, not a movement-specific fix.** Every class that
+proposes a `Continuous` action must define its own end condition and actively
+propose the counter-state (usually `idle`) the instant that condition is met
+— it can never just go silent and assume the state reverts on its own. It
+will not; the agent will stay frozen in that action's animation forever.
+
+The concrete case right now is movement: "walking" ends when the path is
+complete (`agent.currentPath` empties out / arrival distance is reached).
+`AgentMovement.UpdateMovement`'s arrival branch (where it clears `currentPath`
+and sets `waitTimer`) needs its own explicit
+`EvaluateProposition(new Proposition(AgentAction.idle, (int)PriorityTier.Movement, PropositionType.Continuous))`
+call, mirroring the moving branch's `walking` proposal. Every frame, movement
+proposes exactly one of `walking` or `idle` — never neither, never both.
+
+If any future system introduces another `Continuous` action (not `OneShot`/
+`Looping`), it needs the same treatment: identify what "this is no longer
+true" looks like for that specific system, and make sure something explicitly
+proposes the counter-state at that exact moment. Don't assume this is already
+handled elsewhere — check each `Continuous` proposer individually.
+
+
+site mentioned later in this doc — wherever you see those names below,
+translate to building a `Proposition` and calling `EvaluateProposition`):
+```csharp
+var proposition = new Proposition(
+    AgentAction.walking,
+    (int)PriorityTier.Movement,
+    PropositionType.Continuous
+);
+
+var result = agent.Visuals.EvaluateProposition(proposition);
+
+if (result.accepted)
+{
+    agent.transform.position += agent.steeringDirection * agent.currentSpeed * Time.deltaTime;
+}
+```
+
+### Explicit design decisions already made (don't redo this thinking)
+
+- **Facing/flip (`UpdateFacingFromDirection`) does NOT go through Propose.**
+  It's cosmetic (like tint/alpha), not a competing "verb" — treat it as a free
+  standing call, same category as `SetSpriteAlpha`.
+- **`AgentInteraction.priority` (on ScriptableAgent, used by ActionManager to
+  pick WHICH interaction to attempt) is a different concept from
+  `ActionPriority` (used by ActionState to decide if a proposal WINS the
+  lock).** Do not conflate or reuse one for the other. Consider renaming
+  `AgentInteraction.priority` → `selectionPriority` for clarity if convenient,
+  but not required.
+- **One-shot actions get their lock duration from the actual clip length**
+  (`RuntimeAnimatorController.animationClips`, longest clip), not a manually
+  set timer. This means `AgentAnimations` needs a `GetClipDuration(key)`
+  method that `AgentActionState.ProposeOneShot` calls internally.
+- **Effects and animation are not separable.** If a `ProposeOneShot` for an
+  attack is DENIED, the damage must NOT be applied either — being blocked
+  means blocked entirely, not just visually blocked. This applies to
+  `SocialActions.Execute` specifically (see below) and to `AgentSpending`'s
+  purchase-on-arrival (spending is TWO separate proposals: walking there, then
+  a one-shot `purchase` action on arrival — if purchase is denied because
+  something more important is happening, don't spend the money, stay
+  `isOnSpendTrip = true`, retry next frame).
+
+## ⚠️ NAMING MIGRATION NOTE
+
+Everything below this point was drafted before the `Proposition`/
+`EvaluateProposition` naming was finalized (see above), so some snippets still
+say `Propose(...)`, `ProposeOneShot(...)`, `ProposeLooping(...)`, or
+`ActionPriority.X`. Translate all of these mechanically:
+- `ActionPriority.X` → `(int)PriorityTier.X`
+- `Propose(action, priority)` → `EvaluateProposition(new Proposition(action, priority, PropositionType.Continuous))`
+- `ProposeOneShot(action, priority)` → `EvaluateProposition(new Proposition(action, priority, PropositionType.OneShot))`
+- `ProposeLooping(action, priority)` → `EvaluateProposition(new Proposition(action, priority, PropositionType.Looping))`
+- Any `bool` return checks become `.accepted` checks on the returned `PropositionResult`.
+
+The underlying logic (what gates what, what priority each caller uses) is
+still correct in the sections below — only the calling syntax needs
+translating to the finalized vocabulary above.
+
+## Known classes and their required changes
+
+### `AgentActionState` (rewrite from scratch — the gate itself)
+Owns: current action, current priority, lock-until time, is-looping flag, and
+an internal `AgentAnimations` instance (which owns the `Animator` reference —
+nothing else should ever hold a reference to the `Animator`).
+Exposes: `Propose(action, priority)`, `ProposeOneShot(action, priority)`,
+`ProposeLooping(action, priority)`, `Release()`, `CurrentAction`, `IsLocked`.
+
+### `AgentAnimations` (dumb mirror, no logic of its own)
+Given a string key, loads (and caches) the matching `RuntimeAnimatorController`
+via `Resources.Load<RuntimeAnimatorController>($"Sprites/Agents/{agent.type}/{agent.type}_{key}")`
+and swaps it onto the `Animator`, with a `Rebind()`/`Play(0,0,0)`/`Update(0)`
+sequence to avoid pop/reset artifacts. Also exposes `GetClipDuration(key)` for
+`AgentActionState.ProposeOneShot` to use.
+
+### `AnimationLookup` (pure lookup, static dictionary)
+Maps `AgentAction` → animation key string. Most actions map to their own name;
+only list overrides where multiple actions share one clip (e.g. `laugh` →
+`"talk"`, `debate` → `"talk"`).
+
+### `AgentVisuals` (thin forwarding layer, unchanged responsibilities otherwise)
+Owns an `AgentActionState` instance. Forwards `Propose`/`ProposeOneShot`/
+`ProposeLooping`/`ReleaseAction`/`CurrentAction` to it. Keeps its existing
+non-action responsibilities as-is: facing/flip, tint, alpha, shadow sprite,
+sorting, death visuals (rotation/sorting-layer/shadow-disable on death — NOT
+death animation yet, that's a future TODO once a `dead` AgentAction + clip
+exists).
+
+### `AgentMovement` (needs the actual position-write gated)
+`UpdateMovement`'s steering/acceleration math is unchanged. Only the final
+write changes:
+```csharp
+if (agent.Visuals.Propose(AgentAction.walking, ActionPriority.Movement))
+{
+    agent.transform.position += agent.steeringDirection * agent.currentSpeed * Time.deltaTime;
+}
+```
+If denied, skip the write this frame, don't advance, try again next frame
+(path/target state is untouched, so it just resumes cleanly once granted).
+Also gate the `waitTimer` idle branch similarly with
+`Propose(AgentAction.idle, ActionPriority.Movement)` (fire-and-forget, no
+conditional needed there since idle rarely gets denied, but keep it consistent
+so idle also updates the visible animation state correctly).
+
+### `AgentLeaving` (has its OWN separate movement code — BUG, must be fixed)
+`UpdateLeaving` currently does `agent.transform.position = Vector3.MoveTowards(...)`
+directly, completely bypassing `AgentMovement`. This is a second, hidden
+movement system. Gate this the same way as `AgentMovement`:
+```csharp
+if (agent.Visuals.Propose(AgentAction.walking, ActionPriority.Movement))
+{
+    agent.transform.position = Vector3.MoveTowards(currentPos, target, speed * Time.deltaTime);
+}
+```
+Open question left for the person: should leaving-town actually use a HIGHER
+priority than normal Movement (e.g. it should interrupt a chat), or is it fine
+to wait its turn like this? Currently written as waiting its turn
+(`ActionPriority.Movement`) — flag this as a decision point, don't just assume.
+
+### `AgentSpending` (purchase becomes a proposal, not an unconditional action)
+`SpendTripFinishedIfNeeded()` currently calls `SpendMoney` + `CompleteSpendTrip`
+unconditionally once movement arrives. Needs to become:
+```csharp
+public void SpendTripFinishedIfNeeded()
+{
+    if (!agent.isOnSpendTrip)
+        return;
+
+    if (!agent.Visuals.ProposeOneShot(AgentAction.purchase, ActionPriority.Social))
+        return; // something more important is happening — stay put, retry next frame
+
+    SpendMoney(agent.activeSpendAmount);
+    CompleteSpendTrip();
+}
+```
+The travel-toward-shop part needs no change — it already goes through
+`AgentMovement`'s gated walking proposal via normal path-following.
+
+### `SocialActions` (Execute must return granted/denied, and gate the EFFECT)
+Needs:
+1. A `Dictionary<InteractionType, AgentAction>` mapping (fixes the existing
+   bug where every interaction type played the `attack` animation
+   unconditionally).
+2. A priority per interaction type (probably `Combat` for Combat/VampireBite/
+   BarFight/HarvestAnimal, `Social` for Heal/Swoon/Convert — use judgement,
+   flag anything ambiguous back to the person rather than guessing silently).
+3. `Execute()` signature changes to return `bool` (was `void`):
+```csharp
+public static bool Execute(Agent self, Agent target, AgentInteraction interaction)
+{
+    if (self == null || target == null || target.isDead)
+        return false;
+
+    if (!actionForInteraction.TryGetValue(interaction.type, out AgentAction action))
+        return false;
+
+    int priority = priorityForInteraction.TryGetValue(interaction.type, out int p)
+        ? p : ActionPriority.Social;
+
+    if (!self.Visuals.ProposeOneShot(action, priority))
+        return false; // denied — do NOT run the effect
+
+    if (registry.TryGetValue(interaction.type, out var handler))
+        handler.Execute(self, target, interaction);
+
+    return true;
+}
+```
+
+### `ActionManager` (PursueActivePlan must respect the return value)
+Currently:
+```csharp
+if (!IsInRange(activeTarget, activeInteraction.range))
+    return;
+
+SocialActions.Execute(agent, activeTarget, activeInteraction);
+cooldownTimers[activeInteractionIndex] = activeInteraction.cooldown;
+ClearPlan();
+```
+Must become:
+```csharp
+if (!IsInRange(activeTarget, activeInteraction.range))
+    return;
+
+bool executed = SocialActions.Execute(agent, activeTarget, activeInteraction);
+
+if (!executed)
+    return; // denied this tick — plan stays active, retry next tick
+
+cooldownTimers[activeInteractionIndex] = activeInteraction.cooldown;
+ClearPlan();
+```
+Everything else in `ActionManager` (`SelectAction`, `FindNearestValidTarget`,
+`ValidateActiveTarget`, `MoveTowardTarget`, `ApproachTileByPathfinding`,
+cooldown bookkeeping, `CancelCurrentAction`/`ClearPlan`/`ResetAllState`/
+`Reset`) is unchanged — none of it writes position or touches the animator
+directly; `MoveTowardTarget` only sets a desired path via
+`AgentMovement.SetPath`, and `UpdateFacingFromDirection` is the
+explicitly-excluded cosmetic call (see design decisions above).
+
+### `AgentFear` (mostly fine, one known gap to flag, don't silently fix)
+`RunFromDanger` calls `agent.Actions.CancelCurrentAction()` (Task-level) and
+`AgentMovement.ClearPath(agent)`, then routes home — this doesn't propose
+anything to `AgentActionState` directly, it just clears state so
+`AgentMovement`'s next-frame proposal naturally takes over. This is
+compliant. KNOWN GAP: if fear triggers while an agent is mid one-shot-locked
+attack (~0.2s), the fear response won't visually interrupt until that lock
+naturally expires — since one-shots are short this was previously judged
+"probably fine," but flag it back to the person rather than silently adding a
+force-override, since Death-priority overrides weren't explicitly designed in
+for Fear.
+
+### `AgentDeath` (no animation hookup yet — future TODO, don't invent one)
+Currently doesn't touch Action/Animation at all. When a `dead`/death-related
+`AgentAction` and clip eventually exist, `HandleDeath` should call something
+like `agent.Visuals.ProposeOneShot(AgentAction.dead, ActionPriority.Death)` —
+but do NOT invent this now, the person hasn't asked for it yet, just leave
+`AgentDeath` untouched.
+
+### Already fully replaced / do not resurrect
+`AgentActions.cs`'s old `ExecuteInteraction`/target-picking/movement code is
+OBSOLETE and already fully replaced by `ActionManager` + `SocialActions` +
+separate `AgentTeams.cs`/`AgentTrading.cs` files (not shown here, but they
+exist and cover team registry + trading). Do not reference or recreate
+anything from `AgentActions.cs`'s old execution block.
+
+## What to actually do with this document
+
+The person will paste this file plus the current versions of whichever
+classes they want reworked. Go through each pasted class, apply the pattern
+above, and flag (don't silently guess) anywhere:
+- a priority assignment is ambiguous
+- a class touches position/animator in a way not covered by the classes
+  listed above (there may be more the person hasn't pasted yet)
+- gating something changes observable gameplay behavior in a way that seems
+  like a judgment call, not just a mechanical translation
