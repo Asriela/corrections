@@ -1,9 +1,48 @@
-Prefab changes (on your Card prefab):
+Good news: the two scripts aren't broken — I re-read through `CardHand.cs` and `CardHover.cs` line by line again and the logic holds up. This is a prefab setup thing, not a code bug. 🔍
 
-On the root Card GameObject itself (the one with RectTransform, Card, CardDrag, CardHover, BoxCollider2D) — 
-add an Image component. Source Image = None, Color alpha = 0, Raycast Target ✓. This becomes the stationary hit-target for UI hover, 
-same size as the card's own RectTransform, same idea as your fixed-size BoxCollider2D but for the UI raycaster instead of Physics2D.
-Under visual, uncheck Raycast Target on: Image (cardImage), EdgeImage (cardEdgeImage), and the four TMP labels — cardName, cardNumber, 
-price, cardDescript. Looking at your prefab YAML, those TMP labels currently have m_RaycastTarget: 1, which was almost certainly 
-contributing to the flicker too, since text bounding boxes count as raycast surfaces. The new Awake() code will force all of these to false at runtime regardless, 
-but fixing it in the prefab makes it correct in the editor too rather than relying purely on a runtime patch.
+But quick flag before the fix: the "old code" you just pasted for `CardHover.cs` (both copies) is actually **word-for-word identical to the very first version**, before any of the tweening changes. No `card` field, no `restPosition`/`targetPosition`, no raycast-stripping in `Awake()`. So — is that literally what's sitting in your `CardHover.cs` file right now? If yes, the script edit never actually got saved, which matters, but it's *not* what's causing total drag/hover failure (that old script worked fine on its own before). The failure is almost certainly the checkbox changes in the prefab. 🎯
+
+**Here's what most likely happened:** you unchecked Raycast Target on the visual pieces (like I said to) but the new invisible "catch-all" Image on the card root never got added — or got added in the wrong place, or its own checkbox is off. Result: **nothing** on the card has Raycast Target ON anywhere → Unity's click detector has literally nothing to hit → zero hover, zero drag. Total silence, exactly what you're seeing. 🙅‍♀️
+
+## 🛠️ Step-by-step (do this on the `Card` prefab)
+
+**1️⃣ Click on the ROOT `Card` object** (the one at the very top — has `Card`, `CardDrag`, `CardHover`, `BoxCollider2D` on it already)
+
+**2️⃣ Add Component → UI → Image** 📦
+   - Source Image: `None`
+   - Color: white, but drag the **Alpha slider all the way to 0** 👻 (fully invisible)
+   - ✅ Make sure **Raycast Target is CHECKED** — this is the one that matters most
+
+**3️⃣ Now go through EVERY child under `visual`** and uncheck Raycast Target ❌ on each of these:
+   - `Image` (the card art)
+   - `EdgeImage`
+   - `cardName`
+   - `cardNumber`
+   - `price`
+   - `cardDescript`
+
+*(For the text ones, the checkbox is called "Raycast Target" too, near the bottom of the TextMeshPro component.)*
+
+**4️⃣ Save the prefab** 💾 (Ctrl+S with the prefab open, or the blue "Overrides" apply button if you're editing an instance)
+
+## ✅ Quick sanity check before you hit play
+
+Click through every one of these on the prefab and just eyeball the checkbox:
+
+| Object | Raycast Target should be |
+|---|---|
+| Root `Card` → new Image | ✅ ON |
+| `visual/Image` | ❌ OFF |
+| `visual/EdgeImage` | ❌ OFF |
+| `visual/cardName` | ❌ OFF |
+| `visual/cardNumber` | ❌ OFF |
+| `visual/price` | ❌ OFF |
+| `visual/cardDescript` | ❌ OFF |
+
+If even ONE box in that table is wrong, that's your culprit — either nothing is clickable (all off) or the flicker comes back (a moving one is on).
+
+## 🔁 Also — please re-save the script files
+
+Open `CardHover.cs` and `CardHand.cs` in your editor right now and confirm they match what I gave you last message (the ones with `restPosition`/`targetPosition` and the `Dictionary<Card, CardLayoutTarget>`). If they still look like the old versions, copy-paste them in fresh, save, and let Unity recompile before testing again — a stale/old script plus new prefab checkboxes could also produce weird half-broken states.
+
+Try that and let me know what happens — if it's still dead after this, tell me and I'll walk through it with you live rather than guessing again. 🙏
