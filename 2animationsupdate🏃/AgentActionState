@@ -1,0 +1,127 @@
+// AgentActionState.cs
+using System;
+using UnityEngine;
+
+public class AgentActionState
+{
+    private readonly Agent agent;
+    private readonly AgentAnimations animations;
+
+    private AgentAction currentAction = AgentAction.idle;
+    private int currentPriority = (int)PriorityTier.Idle;
+    private float lockedUntil = -1f;
+    private bool isLooping = false;
+
+    private MovementData? currentMovementData = null;
+    private Action currentOnInterrupted = null;
+
+    public AgentAction CurrentAction => currentAction;
+    public MovementData? CurrentMovementData => currentMovementData;
+    public bool IsLocked => isLooping || Time.time < lockedUntil;
+
+    public AgentActionState(Agent agent, Animator animator)
+    {
+        this.agent = agent;
+        animations = new AgentAnimations(agent, animator);
+    }
+
+    public void Init()
+    {
+        currentAction = AgentAction.idle;
+        currentPriority = (int)PriorityTier.Idle;
+        lockedUntil = -1f;
+        isLooping = false;
+        currentMovementData = null;
+        currentOnInterrupted = null;
+        animations.Init();
+    }
+
+    public bool EvaluateProposition(Proposition proposition)
+    {
+        ResolveExpiry();
+
+        bool sameAction = proposition.action == currentAction;
+
+        if (IsLocked && proposition.priority < currentPriority && !sameAction)
+            return false;
+
+        // an actual handover is happening — let the outgoing holder clean up
+        if (!sameAction)
+            currentOnInterrupted?.Invoke();
+
+        currentAction = proposition.action;
+        currentPriority = proposition.priority;
+        currentMovementData = proposition.movementData;
+        currentOnInterrupted = proposition.onInterrupted;
+
+        switch (proposition.type)
+        {
+            case PropositionType.OneShot:
+                isLooping = false;
+                string key = AnimationLookup.GetAnimationKey(proposition.action);
+                float clipDuration = animations.GetClipDuration(key);
+
+                // ⚠️ NEW: a missing animation makes GetClipDuration return 0,
+                // which means this lock expires the SAME frame it's granted —
+                // the action visually shows idle (AgentAnimations' own fallback)
+                // but functionally completes instantly instead of holding.
+                // Flag it loudly here, not just in AgentAnimations, because
+                // this is the actual behavioral consequence — a missing clip
+                // silently changes gameplay timing, not just visuals.
+                if (clipDuration <= 0f)
+                {
+                    Debug.LogWarning(
+                        $"AgentActionState: '{proposition.action}' (key '{key}') has no animation clip for {agent.type} — " +
+                        $"its OneShot lock will expire instantly instead of holding. Add the clip or this action has no visible duration."
+                    );
+                }
+
+                lockedUntil = Time.time + clipDuration;
+                animations.Play(key, forceRestart: true);
+                break;
+
+            case PropositionType.Looping:
+                isLooping = true;
+                lockedUntil = -1f;
+                animations.Play(AnimationLookup.GetAnimationKey(proposition.action), forceRestart: true);
+                break;
+
+            case PropositionType.Continuous:
+            default:
+                if (!sameAction)
+                {
+                    isLooping = false;
+                    lockedUntil = -1f;
+                    animations.Play(AnimationLookup.GetAnimationKey(proposition.action), forceRestart: false);
+                }
+                break;
+        }
+
+        return true;
+    }
+
+    // BACKDOOR — the current holder announces definitive completion (e.g. path
+    // finished). Bypasses the priority contest entirely. Does NOT invoke
+    // currentOnInterrupted — self-completion isn't an interruption.
+    public void Release()
+    {
+        currentOnInterrupted = null;
+        currentMovementData = null;
+
+        currentAction = AgentAction.idle;
+        currentPriority = (int)PriorityTier.Idle;
+        isLooping = false;
+        lockedUntil = -1f;
+
+        animations.Play(AnimationLookup.GetAnimationKey(AgentAction.idle), forceRestart: false);
+    }
+
+    private void ResolveExpiry()
+    {
+        if (!isLooping && lockedUntil >= 0f && Time.time >= lockedUntil)
+        {
+            currentPriority = (int)PriorityTier.Idle;
+            lockedUntil = -1f;
+        }
+    }
+}
