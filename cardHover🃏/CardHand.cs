@@ -214,7 +214,8 @@ public class CardHand : Singleton<CardHand>
     }
 
     // Distance-based falloff so only the card(s) next to the hovered one shuffle aside,
-    // instead of the whole hand shifting.
+    // instead of the whole hand shifting. Smoothstep so it eases to exactly zero at the
+    // edge of the falloff range instead of hard-cutting (that hard cut was the "weird" kink).
     private float SpreadOffsetFor(int index)
     {
         if (hoveredIndex < 0 || index == hoveredIndex)
@@ -223,10 +224,9 @@ public class CardHand : Singleton<CardHand>
         int distance = index - hoveredIndex;
         int absDistance = Mathf.Abs(distance);
 
-        if (absDistance > hoverSpreadFalloff)
-            return 0f;
+        float normalized = Mathf.Clamp01((float)(hoverSpreadFalloff + 1 - absDistance) / hoverSpreadFalloff);
+        float falloffT = normalized * normalized * (3f - 2f * normalized); // smoothstep, eases to 0 cleanly
 
-        float falloffT = 1f - (float)(absDistance - 1) / hoverSpreadFalloff;
         return Mathf.Sign(distance) * hoverGapBoost * falloffT;
     }
 
