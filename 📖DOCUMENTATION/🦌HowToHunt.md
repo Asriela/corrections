@@ -1,33 +1,27 @@
-# 🦌 BoomTown Hunting System Implementation
+You were right that the previous version made tracking much deeper than necessary. This version keeps your existing architecture intact and contains the actual code needed at each implementation step.
+
+# 🦌 BoomTown Hunting System TODO
 
 ## 🎯 Goal
 
-Create a hunting loop that naturally emerges through interactions and conditions.
+Create a hunting loop that emerges naturally through interactions and conditions.
 
 ```text
 Hunter Hut
     ↓
 Choose Best Animal
     ↓
-Choose Tracking Waypoint Near Animal
+Track Animal
     ↓
-Walk To Tracking Waypoint
+Release Track Action
     ↓
-Increase Tracking Progress
+Reconsider Available Animals
     ↓
-Release Current Action
+Continue Tracking Or Switch Target
     ↓
-Reconsider Best Animal
-    ↓
-Repeat Until Animal Is Tracked
-    ↓
-Combat
-    ↓
-Animal Dies
+Hunt Animal
     ↓
 Harvest Animal
-    ↓
-Carry Resources
     ↓
 Return To Hunter Hut
     ↓
@@ -38,61 +32,53 @@ Repeat
 
 ---
 
-# ⚡ Architecture Summary
+# ⚡ AI Flow Reminder
 
 ```text
 📜 ScriptableAgent
-    Defines available interactions and harvest data
-
+    Defines Interactions And Conditions
+    ↓
 🎯 ActionManager
-    Chooses an interaction
-    Chooses the best target
-    Chooses the destination
-    Moves the agent
-    Proposes an AgentAction
-
+    Selects Interaction
+    Chooses Target
+    Moves Into Range
+    Proposes Action
+    ↓
 🎬 AgentActionState
-    Accepts or rejects the proposed action
-    Handles priority, animation, locks, and interruption
-
+    Accepts Or Rejects Proposal
+    Plays Animation
+    Handles Priority And Interruptions
+    ↓
 ⚙️ SocialActions
-    Executes the effect after the destination is reached
-
-✅ Conditions
-    Determine which interactions are available
-
-📈 SocialProgress
-    Stores progress on the target receiving the interaction
-
-🎯 CurrentTarget
-    Stores who an actor is currently targeting for each interaction
+    Executes The Interaction Effect
+    Releases Completed Action
+    ↓
+✅ State And Progress Change
+    Unlocks New Interactions
 ```
 
-The core hunting cycle is:
+For hunting:
 
 ```text
-Decision
+ActionManager
+    Chooses The Best Animal
     ↓
-Target Selection
+Existing Movement
+    Moves Hunter Into Range
     ↓
-Movement
+TrackAction
+    Adds Tracking Progress
+    Releases AgentActionState
     ↓
-Action Proposal
-    ↓
-Effect
-    ↓
-Release
-    ↓
-Decision
+ActionManager
+    Thinks Again
 ```
 
 ---
 
-# 1. 📦 Add Resource Data
+# 1. 📦 Add Resource Types
 
 ## ☐ Add `ObjectType`
-
-Place this somewhere shared and accessible by both agents and town-resource code.
 
 ```csharp
 public enum ObjectType
@@ -113,7 +99,9 @@ public class InventoryItem
     public ObjectType type;
     public int amount;
 
-    public InventoryItem(ObjectType type, int amount)
+    public InventoryItem(
+        ObjectType type,
+        int amount)
     {
         this.type = type;
         this.amount = amount;
@@ -121,24 +109,58 @@ public class InventoryItem
 }
 ```
 
-The constructor is important because harvested resources should be copied into the hunter’s inventory rather than referencing the asset’s original list entries.
-
 ---
 
 # 2. 🎒 Add Inventory To `Agent`
 
-Add:
-
 ```csharp
 [SerializeField]
-public List<InventoryItem> inventory = new List<InventoryItem>();
+public List<InventoryItem> inventory =
+    new List<InventoryItem>();
 ```
 
 ---
 
-## ☐ Add Inventory Helper Methods To `Agent`
+## ☐ Add Inventory Helper
 
-These helpers allow the Inspector-friendly list to behave like a dictionary.
+This keeps the Inspector-friendly list while preventing duplicate entries for the same resource.
+
+```csharp
+public void AddToInventory(
+    ObjectType type,
+    int amount)
+{
+    if (amount <= 0)
+        return;
+
+    if (inventory == null)
+    {
+        inventory =
+            new List<InventoryItem>();
+    }
+
+    foreach (InventoryItem item in inventory)
+    {
+        if (item == null)
+            continue;
+
+        if (item.type != type)
+            continue;
+
+        item.amount += amount;
+        return;
+    }
+
+    inventory.Add(
+        new InventoryItem(
+            type,
+            amount));
+}
+```
+
+---
+
+## ☐ Add Inventory Check
 
 ```csharp
 public bool HasInventoryItems()
@@ -146,79 +168,30 @@ public bool HasInventoryItems()
     if (inventory == null)
         return false;
 
-    for (int i = 0; i < inventory.Count; i++)
+    foreach (InventoryItem item in inventory)
     {
-        InventoryItem item = inventory[i];
-
-        if (item != null && item.amount > 0)
+        if (item != null &&
+            item.amount > 0)
+        {
             return true;
+        }
     }
 
     return false;
 }
 ```
 
-```csharp
-public int GetInventoryAmount(ObjectType type)
-{
-    if (inventory == null)
-        return 0;
-
-    int total = 0;
-
-    for (int i = 0; i < inventory.Count; i++)
-    {
-        InventoryItem item = inventory[i];
-
-        if (item != null && item.type == type)
-            total += item.amount;
-    }
-
-    return total;
-}
-```
-
-```csharp
-public void AddToInventory(ObjectType type, int amount)
-{
-    if (amount <= 0)
-        return;
-
-    if (inventory == null)
-        inventory = new List<InventoryItem>();
-
-    for (int i = 0; i < inventory.Count; i++)
-    {
-        InventoryItem existing = inventory[i];
-
-        if (existing != null && existing.type == type)
-        {
-            existing.amount += amount;
-            return;
-        }
-    }
-
-    inventory.Add(new InventoryItem(type, amount));
-}
-```
-
-```csharp
-public void ClearInventory()
-{
-    inventory?.Clear();
-}
-```
-
 ---
 
-# 3. 🐃 Add Harvest Data To `ScriptableAgent`
+# 3. 🐃 Add Harvest Rewards To `ScriptableAgent`
 
-Add:
+Animals define what they produce when harvested.
 
 ```csharp
 [Header("Hunting")]
 [SerializeField]
-public List<InventoryItem> harvestDrops = new List<InventoryItem>();
+public List<InventoryItem> harvestDrops =
+    new List<InventoryItem>();
 
 [Min(1f)]
 [SerializeField]
@@ -241,47 +214,56 @@ Buffalo
     Food x30
     Fur x20
 
-Legendary Bear
-    Tracking Required: 500
-    Food x40
-    Fur x100
+Bear
+    Tracking Required: 150
+    Food x20
+    Fur x40
 ```
 
 ---
 
-# 4. 📈 Add Progress Storage To `Agent`
+# 4. 📈 Add Social Progress To `Agent`
 
-Progress lives on the target receiving the interaction.
-
-For example:
+Progress lives on the thing receiving the interaction.
 
 ```text
 Buffalo
-    Track Progress: 63
+    Track Progress: 65
 
 Villager
-    Convert Progress: 25
+    Convert Progress: 30
 ```
 
-Add to `Agent`:
+Add:
 
 ```csharp
-public readonly Dictionary<InteractionType, float> socialProgress =
-    new Dictionary<InteractionType, float>();
+public Dictionary<InteractionType, float>
+    socialProgress =
+        new Dictionary<InteractionType, float>();
 ```
 
 ---
 
-## ☐ Add Progress Helpers To `Agent`
+## ☐ Add Progress Helper
 
 ```csharp
-public float GetSocialProgress(InteractionType interactionType)
+public float GetSocialProgress(
+    InteractionType interactionType)
 {
-    return socialProgress.TryGetValue(interactionType, out float value)
-        ? value
-        : 0f;
+    if (socialProgress.TryGetValue(
+            interactionType,
+            out float progress))
+    {
+        return progress;
+    }
+
+    return 0f;
 }
 ```
+
+---
+
+## ☐ Add Progress Increase Helper
 
 ```csharp
 public void AddSocialProgress(
@@ -291,25 +273,15 @@ public void AddSocialProgress(
     if (amount <= 0f)
         return;
 
-    socialProgress[interactionType] =
-        GetSocialProgress(interactionType) + amount;
-}
-```
+    if (!socialProgress.ContainsKey(
+            interactionType))
+    {
+        socialProgress[
+            interactionType] = 0f;
+    }
 
-```csharp
-public void SetSocialProgress(
-    InteractionType interactionType,
-    float amount)
-{
-    socialProgress[interactionType] = Mathf.Max(0f, amount);
-}
-```
-
-```csharp
-public void ClearSocialProgress(
-    InteractionType interactionType)
-{
-    socialProgress.Remove(interactionType);
+    socialProgress[
+        interactionType] += amount;
 }
 ```
 
@@ -317,44 +289,46 @@ public void ClearSocialProgress(
 
 # 5. 🎯 Add Current Targets To `Agent`
 
-The actor stores a separate target for each interaction type.
-
-Examples:
+The actor remembers a separate target for each interaction.
 
 ```text
 Hunter
-    CurrentTarget[Track] → Buffalo
+    currentTarget[Track] → Buffalo
 
 Priest
-    CurrentTarget[Convert] → Villager
+    currentTarget[Convert] → Villager
 ```
 
 Add:
 
 ```csharp
-public readonly Dictionary<InteractionType, Agent> currentTarget =
-    new Dictionary<InteractionType, Agent>();
+public Dictionary<InteractionType, Agent>
+    currentTarget =
+        new Dictionary<InteractionType, Agent>();
 ```
 
 ---
 
-## ☐ Add Current-Target Helpers To `Agent`
+## ☐ Add Target Helper
 
 ```csharp
-public Agent GetCurrentTarget(InteractionType interactionType)
+public Agent GetCurrentTarget(
+    InteractionType interactionType)
 {
-    if (!currentTarget.TryGetValue(interactionType, out Agent target))
-        return null;
-
-    if (target == null)
+    if (currentTarget.TryGetValue(
+            interactionType,
+            out Agent target))
     {
-        currentTarget.Remove(interactionType);
-        return null;
+        return target;
     }
 
-    return target;
+    return null;
 }
 ```
+
+---
+
+## ☐ Add Target Setter
 
 ```csharp
 public void SetCurrentTarget(
@@ -363,27 +337,33 @@ public void SetCurrentTarget(
 {
     if (target == null)
     {
-        currentTarget.Remove(interactionType);
+        currentTarget.Remove(
+            interactionType);
+
         return;
     }
 
-    currentTarget[interactionType] = target;
+    currentTarget[
+        interactionType] = target;
 }
 ```
+
+---
+
+## ☐ Add Target Clearer
 
 ```csharp
 public void ClearCurrentTarget(
     InteractionType interactionType)
 {
-    currentTarget.Remove(interactionType);
+    currentTarget.Remove(
+        interactionType);
 }
 ```
 
 ---
 
 # 6. 🦴 Add Harvest State To `Agent`
-
-Add:
 
 ```csharp
 public bool harvested;
@@ -398,7 +378,7 @@ Being Tracked
     ↓
 Fully Tracked
     ↓
-Dead
+Killed
     ↓
 Harvestable
     ↓
@@ -416,7 +396,7 @@ Track,
 DepositResources
 ```
 
-The enum should resemble:
+Updated enum:
 
 ```csharp
 public enum InteractionType
@@ -445,7 +425,7 @@ track,
 deposit
 ```
 
-The enum should resemble:
+Updated enum:
 
 ```csharp
 public enum AgentAction
@@ -469,9 +449,9 @@ public enum AgentAction
 }
 ```
 
-Remember to add animation keys for `track` and `deposit` to `AnimationLookup`.
+Remember to add the matching animation keys to `AnimationLookup`.
 
-If no dedicated animation exists yet, map them temporarily to an existing animation rather than allowing a missing clip to produce a zero-duration lock.
+Temporary animation mappings are acceptable if dedicated tracking and depositing animations do not exist yet.
 
 ---
 
@@ -486,7 +466,7 @@ animalDead,
 carryingResources
 ```
 
-Example:
+Updated enum:
 
 ```csharp
 public enum ConditionType
@@ -503,111 +483,92 @@ public enum ConditionType
 
 ---
 
-# 10. 🎯 Update `ActionManager` Target Selection
+# 10. 🎯 Special-Case Tracking Target Selection
 
-Tracking must reconsider all eligible animals every time a tracking interaction is selected.
-
-The current target receives no switching penalty.
-
-Alternative animals receive a switching penalty.
-
-The score is:
+## Current Flow
 
 ```text
-Harvest Value
-    -
-Distance
-    -
-Switch Penalty
+Select Interaction
+    ↓
+FindNearestValidTarget()
+    ↓
+Use Nearest Target
 ```
+
+The problem:
+
+```text
+Hunter Tracks Buffalo To 70%
+    ↓
+Decision Tick
+    ↓
+Pig Happens To Be Closer
+    ↓
+Hunter Switches To Pig
+```
+
+Tracking therefore needs its own target-selection method.
 
 ---
 
-## ☐ Add Tracking Constants To `ActionManager`
-
-Place these near the other fields:
-
-```csharp
-private const float TrackingTargetSwitchPenalty = 25f;
-private const int TrackingWaypointRadiusTiles = 3;
-```
-
----
-
-## ☐ Add Tracking-Destination State To `ActionManager`
-
-Tracking needs a destination that is separate from the animal’s current position.
-
-Add:
-
-```csharp
-private bool hasTrackingDestination;
-private Vector2Int trackingDestinationTile;
-private Agent trackingDestinationTarget;
-```
-
-This destination lasts for one tracking cycle.
-
-Once the hunter reaches it and `TrackAction` executes, `ClearPlan()` removes it.
-
----
-
-## ☐ Replace Target Selection Inside `SelectAction()`
+## ☐ Change Target Selection In `SelectAction()`
 
 Find:
 
 ```csharp
-Agent target = FindNearestValidTarget(chosen);
+Agent target =
+    FindNearestValidTarget(chosen);
 ```
 
-Replace it with:
+Replace with:
 
 ```csharp
-Agent target;
-
-switch (chosen.type)
-{
-    case InteractionType.Track:
-        target = FindBestTrackingTarget(chosen);
-        break;
-
-    case InteractionType.DepositResources:
-        target = CanDepositResources()
-            ? agent
-            : null;
-        break;
-
-    default:
-        target = FindNearestValidTarget(chosen);
-        break;
-}
+Agent target =
+    chosen.type == InteractionType.Track
+        ? FindBestTrackingTarget(chosen)
+        : FindNearestValidTarget(chosen);
 ```
 
-The full relevant portion becomes:
+The relevant part of `SelectAction()` becomes:
 
 ```csharp
-private void SelectAction(ScriptableAgent data)
+private void SelectAction(
+    ScriptableAgent data)
 {
     AgentInteraction chosen = null;
     int chosenIndex = -1;
     int bestPriority = int.MinValue;
 
-    for (int i = 0; i < data.interactions.Count; i++)
+    for (int i = 0;
+         i < data.interactions.Count;
+         i++)
     {
-        AgentInteraction interaction = data.interactions[i];
+        AgentInteraction interaction =
+            data.interactions[i];
 
         if (cooldownTimers[i] > 0f)
             continue;
 
-        if (!AreConditionsMet(interaction))
-            continue;
+        /*
+         * Keep the existing condition check here.
+         * Example:
+         *
+         * if (!AreConditionsMet(interaction))
+         *     continue;
+         */
 
-        if (Random.value > interaction.chance)
-            continue;
-
-        if (interaction.priority > bestPriority)
+        if (Random.value >
+            interaction.chance)
         {
-            bestPriority = interaction.priority;
+            continue;
+        }
+
+        if (interaction.priority >
+            bestPriority)
+        {
+            bestPriority =
+                interaction.priority;
+
             chosen = interaction;
             chosenIndex = i;
         }
@@ -616,24 +577,10 @@ private void SelectAction(ScriptableAgent data)
     if (chosen == null)
         return;
 
-    Agent target;
-
-    switch (chosen.type)
-    {
-        case InteractionType.Track:
-            target = FindBestTrackingTarget(chosen);
-            break;
-
-        case InteractionType.DepositResources:
-            target = CanDepositResources()
-                ? agent
-                : null;
-            break;
-
-        default:
-            target = FindNearestValidTarget(chosen);
-            break;
-    }
+    Agent target =
+        chosen.type == InteractionType.Track
+            ? FindBestTrackingTarget(chosen)
+            : FindNearestValidTarget(chosen);
 
     if (target == null)
         return;
@@ -642,66 +589,117 @@ private void SelectAction(ScriptableAgent data)
     activeInteractionIndex = chosenIndex;
     activeTarget = target;
 
-    ResetInteractionDestination();
-
     PursueActivePlan();
 }
 ```
 
-`AreConditionsMet()` is included later in this document.
-
 ---
 
-## ☐ Add `FindBestTrackingTarget()`
+# 11. 🦌 Add `FindBestTrackingTarget()`
 
-Add this method to `ActionManager`:
+This method:
+
+```text
+Checks Current Tracking Target
+    ↓
+Scores Current Target Without Penalty
+    ↓
+Scores Other Animals With Switch Penalty
+    ↓
+Chooses Best Animal
+    ↓
+Stores Winner In currentTarget[Track]
+```
+
+Add to `ActionManager`:
 
 ```csharp
 private Agent FindBestTrackingTarget(
     AgentInteraction interaction)
 {
     Agent currentTrackTarget =
-        agent.GetCurrentTarget(InteractionType.Track);
+        agent.GetCurrentTarget(
+            InteractionType.Track);
 
-    if (!IsValidTrackingTarget(currentTrackTarget, interaction))
+    if (currentTrackTarget != null &&
+        (currentTrackTarget.isDead ||
+         currentTrackTarget.IsLeavingTown ||
+         !currentTrackTarget.HasAnyTag(
+             interaction.targetTags)))
     {
-        agent.ClearCurrentTarget(InteractionType.Track);
+        agent.ClearCurrentTarget(
+            InteractionType.Track);
+
         currentTrackTarget = null;
     }
 
-    Agent bestTarget = currentTrackTarget;
+    Agent bestTarget =
+        currentTrackTarget;
 
-    float bestScore = currentTrackTarget != null
-        ? CalculateTrackingScore(
-            currentTrackTarget,
-            applySwitchPenalty: false)
-        : float.MinValue;
+    float bestScore =
+        currentTrackTarget != null
+            ? CalculateTrackingScore(
+                currentTrackTarget,
+                applySwitchPenalty: false)
+            : float.MinValue;
 
-    var allAgents = GameManager.Instance?.AllAgents;
+    var allAgents =
+        GameManager.Instance?.AllAgents;
 
     if (allAgents == null)
         return bestTarget;
 
     foreach (var candidates in allAgents)
     {
-        foreach (Agent candidate in candidates.Value)
+        foreach (Agent candidate in
+                 candidates.Value)
         {
-            if (!IsValidTrackingTarget(candidate, interaction))
+            if (candidate == null ||
+                candidate == agent ||
+                candidate.isDead ||
+                candidate.IsLeavingTown)
+            {
+                continue;
+            }
+
+            if (!candidate.HasAnyTag(
+                    interaction.targetTags))
+            {
+                continue;
+            }
+
+            ScriptableAgent candidateData =
+                AgentData.Instance?.GetAgent(
+                    candidate.type);
+
+            if (candidateData == null)
                 continue;
 
-            bool isSwitching =
+            float trackingProgress =
+                candidate.GetSocialProgress(
+                    InteractionType.Track);
+
+            if (trackingProgress >=
+                candidateData.trackingRequired)
+            {
+                continue;
+            }
+
+            bool isDifferentTarget =
                 currentTrackTarget != null &&
                 candidate != currentTrackTarget;
 
-            float score = CalculateTrackingScore(
-                candidate,
-                applySwitchPenalty: isSwitching);
+            float score =
+                CalculateTrackingScore(
+                    candidate,
+                    applySwitchPenalty:
+                        isDifferentTarget);
 
-            if (score <= bestScore)
-                continue;
-
-            bestScore = score;
-            bestTarget = candidate;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestTarget = candidate;
+            }
         }
     }
 
@@ -718,778 +716,96 @@ private Agent FindBestTrackingTarget(
 
 ---
 
-## ☐ Add `IsValidTrackingTarget()`
+# 12. 📊 Add `CalculateTrackingScore()`
 
-```csharp
-private bool IsValidTrackingTarget(
-    Agent candidate,
-    AgentInteraction interaction)
-{
-    if (candidate == null)
-        return false;
+The initial score formula is:
 
-    if (candidate == agent)
-        return false;
-
-    if (candidate.isDead)
-        return false;
-
-    if (candidate.IsLeavingTown)
-        return false;
-
-    if (candidate.harvested)
-        return false;
-
-    if (!candidate.HasAnyTag(interaction.targetTags))
-        return false;
-
-    ScriptableAgent candidateData =
-        AgentData.Instance?.GetAgent(candidate.type);
-
-    if (candidateData == null)
-        return false;
-
-    float currentProgress =
-        candidate.GetSocialProgress(InteractionType.Track);
-
-    if (currentProgress >= candidateData.trackingRequired)
-        return false;
-
-    return true;
-}
+```text
+Harvest Value
+    -
+Distance
+    -
+Switch Penalty
 ```
 
-A fully tracked animal is excluded from another `Track` selection because the combat interaction should become available instead.
-
----
-
-## ☐ Add `CalculateTrackingScore()`
+Add to `ActionManager`:
 
 ```csharp
 private float CalculateTrackingScore(
     Agent target,
     bool applySwitchPenalty)
 {
+    const float SwitchPenalty = 25f;
+
     if (target == null)
         return float.MinValue;
 
+    float score = 0f;
+
     ScriptableAgent data =
-        AgentData.Instance?.GetAgent(target.type);
+        AgentData.Instance?.GetAgent(
+            target.type);
 
-    if (data == null)
-        return float.MinValue;
-
-    float harvestValue = 0f;
-
-    if (data.harvestDrops != null)
+    if (data != null &&
+        data.harvestDrops != null)
     {
-        foreach (InventoryItem drop in data.harvestDrops)
+        foreach (InventoryItem drop in
+                 data.harvestDrops)
         {
-            if (drop == null || drop.amount <= 0)
+            if (drop == null)
                 continue;
 
-            switch (drop.type)
-            {
-                case ObjectType.Food:
-                    harvestValue += drop.amount;
-                    break;
-
-                case ObjectType.Fur:
-                    harvestValue += drop.amount;
-                    break;
-            }
+            score += drop.amount;
         }
     }
 
-    float distance = Vector3.Distance(
+    score -= Vector3.Distance(
         agent.transform.position,
         target.transform.position);
 
-    float score = harvestValue - distance;
-
     if (applySwitchPenalty)
-        score -= TrackingTargetSwitchPenalty;
+        score -= SwitchPenalty;
 
     return score;
 }
 ```
 
-For now, one unit of food and one unit of fur have equal hunting score.
+The current animal receives no switch penalty.
 
-Change the weights later if town food and town wealth have different strategic values.
+Alternative animals receive:
+
+```csharp
+-25f
+```
+
+The hunter therefore stays committed unless another animal is significantly more valuable or more convenient.
 
 ---
 
-# 11. 🧭 Add Tracking-Waypoint Movement To `ActionManager`
+# 13. ⚙️ Add `TrackAction`
 
-Tracking should not execute when the hunter merely reaches the animal.
-
-The hunter should:
+`ActionManager` has already:
 
 ```text
-Choose a point near the animal
+Chosen The Interaction
+Chosen The Animal
+Moved Into Range
+Proposed AgentAction.track
+```
+
+`TrackAction` only needs to:
+
+```text
+Increase Tracking Progress
     ↓
-Walk to that point
-    ↓
-Gain tracking progress
-    ↓
-Release the action
+Release AgentActionState
 ```
 
----
-
-## ☐ Replace `PursueActivePlan()`
-
-Use this version:
+Add to `SocialActions.cs`:
 
 ```csharp
-private void PursueActivePlan()
-{
-    if (!ValidateActiveTarget())
-    {
-        ClearPlan();
-        return;
-    }
-
-    MoveTowardTarget(
-        activeTarget,
-        activeInteraction);
-
-    if (!HasReachedInteractionDestination(
-            activeTarget,
-            activeInteraction))
-    {
-        return;
-    }
-
-    if (!SocialActions.TryGetAction(
-            activeInteraction.type,
-            out AgentAction action))
-    {
-        ClearPlan();
-        return;
-    }
-
-    int priority =
-        SocialActions.GetPriority(activeInteraction.type);
-
-    AgentInteraction interactionForCallback =
-        activeInteraction;
-
-    var proposition = new Proposition(
-        action,
-        priority,
-        PropositionType.OneShot,
-        onInterrupted: () =>
-            SocialActions.Cancel(
-                agent,
-                interactionForCallback)
-    );
-
-    if (!agent.Visuals.EvaluateProposition(proposition))
-        return;
-
-    SocialActions.Process(
-        agent,
-        activeTarget,
-        activeInteraction);
-
-    cooldownTimers[activeInteractionIndex] =
-        activeInteraction.cooldown;
-
-    ClearPlan();
-}
-```
-
----
-
-## ☐ Replace `MoveTowardTarget()`
-
-Add the special Track and Deposit cases at the beginning.
-
-```csharp
-private void MoveTowardTarget(
-    Agent target,
-    AgentInteraction interaction)
-{
-    if (interaction.type == InteractionType.Track)
-    {
-        MoveTowardTrackingDestination(target);
-        return;
-    }
-
-    if (interaction.type == InteractionType.DepositResources)
-    {
-        MoveTowardWorkplace();
-        return;
-    }
-
-    Vector3 selfPos = agent.transform.position;
-    Vector3 targetPos = target.transform.position;
-
-    agent.movementType = interaction.canEnterTargetBuilding
-        ? MovementType.AllowTargetBuildingOnly
-        : MovementType.AvoidAllBuildings;
-
-    agent.roamInsideTarget = false;
-
-    Vector2Int targetTileNow =
-        AgentPathing.WorldToGrid(agent, targetPos);
-
-    agent.targetTile = targetTileNow;
-
-    if (interaction.canEnterTargetBuilding)
-    {
-        ApproachTileByPathfinding(
-            targetTileNow,
-            targetPos,
-            interaction);
-    }
-    else
-    {
-        float yDiff =
-            Mathf.Abs(selfPos.y - targetPos.y);
-
-        float xDiff =
-            Mathf.Abs(selfPos.x - targetPos.x);
-
-        if (yDiff <= interaction.alignmentTolerance &&
-            xDiff <= interaction.range)
-        {
-            agent.Visuals.UpdateFacingFromDirection(
-                targetPos - selfPos);
-
-            return;
-        }
-
-        float side =
-            selfPos.x <= targetPos.x ? -1f : 1f;
-
-        if (Mathf.Abs(selfPos.x - targetPos.x) < 0.001f)
-            side = 1f;
-
-        Vector3 desiredPosition = new Vector3(
-            targetPos.x +
-                side * interaction.standOffDistance,
-            targetPos.y,
-            selfPos.z
-        );
-
-        if (!AgentPathing.TryGetCurrentPathTarget(
-                agent,
-                out Vector3 currentPathTarget) ||
-            (currentPathTarget - desiredPosition).sqrMagnitude >
-                0.05f)
-        {
-            AgentMovement.SetPath(
-                agent,
-                new List<Vector3>
-                {
-                    desiredPosition
-                });
-        }
-    }
-
-    agent.Visuals.UpdateFacingFromDirection(
-        targetPos - selfPos);
-}
-```
-
----
-
-## ☐ Add `MoveTowardTrackingDestination()`
-
-```csharp
-private void MoveTowardTrackingDestination(
-    Agent target)
-{
-    if (target == null)
-        return;
-
-    if (!hasTrackingDestination ||
-        trackingDestinationTarget != target)
-    {
-        if (!TryChooseTrackingDestination(
-                target,
-                out trackingDestinationTile))
-        {
-            return;
-        }
-
-        hasTrackingDestination = true;
-        trackingDestinationTarget = target;
-    }
-
-    agent.movementType =
-        MovementType.AvoidAllBuildings;
-
-    agent.roamInsideTarget = false;
-    agent.targetTile = trackingDestinationTile;
-
-    Vector2Int currentDestinationTile =
-        agent.currentPath.Count > 0
-            ? AgentPathing.WorldToGrid(
-                agent,
-                agent.currentPath[
-                    agent.currentPath.Count - 1])
-            : trackingDestinationTile;
-
-    bool needsNewPath =
-        agent.currentPath.Count == 0 ||
-        currentDestinationTile != trackingDestinationTile;
-
-    if (!needsNewPath)
-        return;
-
-    if (AgentPathing.TryFindPathToTile(
-            agent,
-            trackingDestinationTile,
-            out List<Vector3> worldPath))
-    {
-        AgentMovement.SetPath(agent, worldPath);
-    }
-}
-```
-
----
-
-## ☐ Add `TryChooseTrackingDestination()`
-
-This searches for a reachable tile around the animal.
-
-```csharp
-private bool TryChooseTrackingDestination(
-    Agent target,
-    out Vector2Int chosenTile)
-{
-    chosenTile = Vector2Int.zero;
-
-    if (target == null)
-        return false;
-
-    Vector2Int targetTile =
-        AgentPathing.WorldToGrid(
-            agent,
-            target.transform.position);
-
-    List<Vector2Int> candidates =
-        new List<Vector2Int>();
-
-    for (int x = -TrackingWaypointRadiusTiles;
-         x <= TrackingWaypointRadiusTiles;
-         x++)
-    {
-        for (int y = -TrackingWaypointRadiusTiles;
-             y <= TrackingWaypointRadiusTiles;
-             y++)
-        {
-            if (x == 0 && y == 0)
-                continue;
-
-            Vector2Int offset =
-                new Vector2Int(x, y);
-
-            if (offset.sqrMagnitude >
-                TrackingWaypointRadiusTiles *
-                TrackingWaypointRadiusTiles)
-            {
-                continue;
-            }
-
-            candidates.Add(targetTile + offset);
-        }
-    }
-
-    while (candidates.Count > 0)
-    {
-        int randomIndex =
-            Random.Range(0, candidates.Count);
-
-        Vector2Int candidate =
-            candidates[randomIndex];
-
-        candidates.RemoveAt(randomIndex);
-
-        if (!AgentPathing.TryFindPathToTile(
-                agent,
-                candidate,
-                out List<Vector3> ignoredPath))
-        {
-            continue;
-        }
-
-        chosenTile = candidate;
-        return true;
-    }
-
-    return false;
-}
-```
-
-This version verifies that the selected tile has a valid path before accepting it.
-
----
-
-## ☐ Add `HasReachedInteractionDestination()`
-
-```csharp
-private bool HasReachedInteractionDestination(
-    Agent target,
-    AgentInteraction interaction)
-{
-    switch (interaction.type)
-    {
-        case InteractionType.Track:
-            return HasReachedTrackingDestination();
-
-        case InteractionType.DepositResources:
-            return HasReachedWorkplace();
-
-        default:
-            return IsInRange(
-                target,
-                interaction.range);
-    }
-}
-```
-
----
-
-## ☐ Add `HasReachedTrackingDestination()`
-
-```csharp
-private bool HasReachedTrackingDestination()
-{
-    if (!hasTrackingDestination)
-        return false;
-
-    Vector2Int selfTile =
-        AgentPathing.WorldToGrid(
-            agent,
-            agent.transform.position);
-
-    return selfTile == trackingDestinationTile &&
-           agent.currentPath.Count == 0;
-}
-```
-
----
-
-## ☐ Reset Interaction Destinations
-
-Add:
-
-```csharp
-private void ResetInteractionDestination()
-{
-    hasTrackingDestination = false;
-    trackingDestinationTile = Vector2Int.zero;
-    trackingDestinationTarget = null;
-}
-```
-
-Update `ClearPlan()`:
-
-```csharp
-private void ClearPlan()
-{
-    activeInteraction = null;
-    activeInteractionIndex = -1;
-    activeTarget = null;
-
-    ResetInteractionDestination();
-}
-```
-
----
-
-# 12. 🏕️ Add Workplace Movement For Depositing
-
-The existing interaction system expects an `Agent` target.
-
-For `DepositResources`, use the hunter itself as the interaction target while ActionManager sends the hunter to `myWorkplace`.
-
----
-
-## ☐ Add `CanDepositResources()`
-
-```csharp
-private bool CanDepositResources()
-{
-    return agent.myWorkplace != null &&
-           agent.HasInventoryItems();
-}
-```
-
----
-
-## ☐ Add `MoveTowardWorkplace()`
-
-```csharp
-private void MoveTowardWorkplace()
-{
-    if (agent.myWorkplace == null)
-        return;
-
-    Vector2Int workplaceTile =
-        AgentPathing.WorldToGrid(
-            agent,
-            agent.myWorkplace.transform.position);
-
-    if (!AgentPathing.TryGetFrontAccessTile(
-            agent,
-            workplaceTile,
-            out Vector2Int frontTile,
-            ignoreWalkability: true))
-    {
-        return;
-    }
-
-    agent.movementType =
-        MovementType.AvoidAllBuildings;
-
-    agent.roamInsideTarget = false;
-    agent.targetTile = frontTile;
-
-    Vector2Int currentDestinationTile =
-        agent.currentPath.Count > 0
-            ? AgentPathing.WorldToGrid(
-                agent,
-                agent.currentPath[
-                    agent.currentPath.Count - 1])
-            : frontTile;
-
-    bool needsNewPath =
-        agent.currentPath.Count == 0 ||
-        currentDestinationTile != frontTile;
-
-    if (!needsNewPath)
-        return;
-
-    if (AgentPathing.TryFindPathToTile(
-            agent,
-            frontTile,
-            out List<Vector3> worldPath))
-    {
-        AgentMovement.SetPath(agent, worldPath);
-    }
-}
-```
-
----
-
-## ☐ Add `HasReachedWorkplace()`
-
-```csharp
-private bool HasReachedWorkplace()
-{
-    if (agent.myWorkplace == null)
-        return false;
-
-    Vector2Int workplaceTile =
-        AgentPathing.WorldToGrid(
-            agent,
-            agent.myWorkplace.transform.position);
-
-    if (!AgentPathing.TryGetFrontAccessTile(
-            agent,
-            workplaceTile,
-            out Vector2Int frontTile,
-            ignoreWalkability: true))
-    {
-        return false;
-    }
-
-    Vector2Int selfTile =
-        AgentPathing.WorldToGrid(
-            agent,
-            agent.transform.position);
-
-    return selfTile == frontTile &&
-           agent.currentPath.Count == 0;
-}
-```
-
----
-
-# 13. 🦴 Allow Harvesting Dead Targets
-
-The current code rejects dead targets in three places.
-
-That prevents `HarvestAnimal` from ever executing on a corpse.
-
----
-
-## ☐ Update `FindNearestValidTarget()`
-
-Replace the dead-target check:
-
-```csharp
-if (candidate == null ||
-    candidate == agent ||
-    candidate.isDead ||
-    candidate.IsLeavingTown)
-{
-    continue;
-}
-```
-
-With:
-
-```csharp
-if (candidate == null ||
-    candidate == agent ||
-    candidate.IsLeavingTown)
-{
-    continue;
-}
-
-bool requiresDeadTarget =
-    interaction.type ==
-    InteractionType.HarvestAnimal;
-
-if (requiresDeadTarget)
-{
-    if (!candidate.isDead ||
-        candidate.harvested)
-    {
-        continue;
-    }
-}
-else
-{
-    if (candidate.isDead)
-        continue;
-}
-```
-
-The full method becomes:
-
-```csharp
-private Agent FindNearestValidTarget(
-    AgentInteraction interaction)
-{
-    var allAgents =
-        GameManager.Instance?.AllAgents;
-
-    if (allAgents == null)
-        return null;
-
-    Agent bestTarget = null;
-    float bestDist = float.MaxValue;
-
-    Vector3 selfPos =
-        agent.transform.position;
-
-    foreach (var candidates in allAgents)
-    {
-        foreach (Agent candidate in candidates.Value)
-        {
-            if (candidate == null ||
-                candidate == agent ||
-                candidate.IsLeavingTown)
-            {
-                continue;
-            }
-
-            bool requiresDeadTarget =
-                interaction.type ==
-                InteractionType.HarvestAnimal;
-
-            if (requiresDeadTarget)
-            {
-                if (!candidate.isDead ||
-                    candidate.harvested)
-                {
-                    continue;
-                }
-            }
-            else
-            {
-                if (candidate.isDead)
-                    continue;
-            }
-
-            if (!candidate.HasAnyTag(
-                    interaction.targetTags))
-            {
-                continue;
-            }
-
-            float dist = Vector3.Distance(
-                selfPos,
-                candidate.transform.position);
-
-            if (dist < bestDist)
-            {
-                bestDist = dist;
-                bestTarget = candidate;
-            }
-        }
-    }
-
-    return bestTarget;
-}
-```
-
----
-
-## ☐ Replace `ValidateActiveTarget()`
-
-```csharp
-private bool ValidateActiveTarget()
-{
-    if (activeTarget == null ||
-        activeInteraction == null)
-    {
-        return false;
-    }
-
-    if (activeInteraction.type ==
-        InteractionType.DepositResources)
-    {
-        return activeTarget == agent &&
-               CanDepositResources();
-    }
-
-    if (activeTarget.IsLeavingTown)
-        return false;
-
-    if (activeInteraction.type ==
-        InteractionType.HarvestAnimal)
-    {
-        if (!activeTarget.isDead)
-            return false;
-
-        if (activeTarget.harvested)
-            return false;
-    }
-    else
-    {
-        if (activeTarget.isDead)
-            return false;
-    }
-
-    if (!activeTarget.HasAnyTag(
-            activeInteraction.targetTags))
-    {
-        return false;
-    }
-
-    return true;
-}
-```
-
----
-
-# 14. ⚙️ Add `TrackAction` To `SocialActions.cs`
-
-`TrackAction` applies one completed unit of tracking progress and then releases the accepted action.
-
-It does not choose the target or destination.
-
-```csharp
-public class TrackAction : ISocialAction
+public class TrackAction :
+    ISocialAction
 {
     public void Execute(
         Agent self,
@@ -1513,131 +829,13 @@ public class TrackAction : ISocialAction
             InteractionType.Track,
             progressAmount);
 
-        float currentProgress =
-            target.GetSocialProgress(
-                InteractionType.Track);
-
-        ScriptableAgent targetData =
-            AgentData.Instance?.GetAgent(
-                target.type);
-
-        float requiredProgress =
-            targetData != null
-                ? targetData.trackingRequired
-                : 100f;
-
         Debug.Log(
-            $"{self.type} tracked {target.type}: " +
-            $"{currentProgress:0.##}/" +
-            $"{requiredProgress:0.##}"
+            $"{self.type} tracked " +
+            $"{target.type}. Progress: " +
+            $"{target.GetSocialProgress(InteractionType.Track)}"
         );
 
-        self.Visuals.Release();
-    }
-}
-```
-
-Each completed tracking waypoint now means:
-
-```text
-Tracking Progress Increased
-    ↓
-Track Action Released
-    ↓
-ActionManager Can Think Again
-    ↓
-Best Animal Re-evaluated
-```
-
----
-
-# 15. 🔪 Replace `HarvestAnimalAction`
-
-The existing implementation kills the target:
-
-```csharp
-AgentDeath.HurtAgent(
-    target,
-    deathType.bleeding,
-    9999f);
-```
-
-That behaviour belongs to hunting/combat, not harvesting.
-
-Replace the entire class with:
-
-```csharp
-public class HarvestAnimalAction : ISocialAction
-{
-    public void Execute(
-        Agent self,
-        Agent target,
-        AgentInteraction interaction)
-    {
-        if (self == null || target == null)
-        {
-            self?.Visuals.Release();
-            return;
-        }
-
-        if (!target.isDead)
-        {
-            Debug.LogWarning(
-                $"{self.type} tried to harvest " +
-                $"{target.type}, but the target is alive."
-            );
-
-            self.Visuals.Release();
-            return;
-        }
-
-        if (target.harvested)
-        {
-            self.Visuals.Release();
-            return;
-        }
-
-        ScriptableAgent targetData =
-            AgentData.Instance?.GetAgent(
-                target.type);
-
-        if (targetData == null)
-        {
-            Debug.LogWarning(
-                $"No ScriptableAgent data found for " +
-                $"{target.type}."
-            );
-
-            self.Visuals.Release();
-            return;
-        }
-
-        if (targetData.harvestDrops != null)
-        {
-            foreach (InventoryItem drop in
-                     targetData.harvestDrops)
-            {
-                if (drop == null ||
-                    drop.amount <= 0)
-                {
-                    continue;
-                }
-
-                self.AddToInventory(
-                    drop.type,
-                    drop.amount);
-            }
-        }
-
-        target.harvested = true;
-
-        self.ClearCurrentTarget(
-            InteractionType.Track);
-
-        Debug.Log(
-            $"{self.type} harvested {target.type}."
-        );
-
+        // This tracking interaction is complete.
         self.Visuals.Release();
     }
 }
@@ -1645,148 +843,42 @@ public class HarvestAnimalAction : ISocialAction
 
 ---
 
-# 16. 🏕️ Add `DepositResourcesAction`
+# 14. 🧾 Register `TrackAction`
 
-The exact global-stat method names must match the classes in the project.
-
-The current UI references:
-
-```text
-stat.tot_food
-stat.tot_Wealth
-stat.tot_Goodness
-```
-
-Create one central helper for modifying those values.
-
----
-
-## ☐ Create Deposit Action
+## ☐ Add To `actionForInteraction`
 
 ```csharp
-public class DepositResourcesAction : ISocialAction
 {
-    public void Execute(
-        Agent self,
-        Agent target,
-        AgentInteraction interaction)
-    {
-        if (self == null)
-            return;
-
-        if (self.myWorkplace == null)
-        {
-            Debug.LogWarning(
-                $"{self.type} cannot deposit resources " +
-                $"because no workplace is assigned."
-            );
-
-            self.Visuals.Release();
-            return;
-        }
-
-        if (!self.HasInventoryItems())
-        {
-            self.Visuals.Release();
-            return;
-        }
-
-        int depositedFood = 0;
-        int depositedFur = 0;
-
-        foreach (InventoryItem item in self.inventory)
-        {
-            if (item == null || item.amount <= 0)
-                continue;
-
-            switch (item.type)
-            {
-                case ObjectType.Food:
-                    depositedFood += item.amount;
-                    break;
-
-                case ObjectType.Fur:
-                    depositedFur += item.amount;
-                    break;
-            }
-        }
-
-        /*
-         * Replace these two calls with the actual
-         * town-stat API used by the project.
-         */
-        TownResourceDeposit.AddFood(depositedFood);
-        TownResourceDeposit.AddWealth(depositedFur);
-
-        self.ClearInventory();
-
-        Debug.Log(
-            $"{self.type} deposited " +
-            $"{depositedFood} food and " +
-            $"{depositedFur} wealth."
-        );
-
-        self.Visuals.Release();
-    }
-}
+    InteractionType.Track,
+    AgentAction.track
+},
 ```
 
 ---
 
-## ☐ Add A Temporary Town Resource Adapter
-
-Replace the bodies of these methods with the actual code that modifies:
-
-```text
-tot_food
-tot_Wealth
-```
+## ☐ Add To `priorityForInteraction`
 
 ```csharp
-public static class TownResourceDeposit
 {
-    public static void AddFood(int amount)
-    {
-        if (amount <= 0)
-            return;
-
-        /*
-         * Replace with the real project reference.
-         *
-         * Example:
-         * GameStats.Instance.stat.tot_food += amount;
-         */
-    }
-
-    public static void AddWealth(int amount)
-    {
-        if (amount <= 0)
-            return;
-
-        /*
-         * Replace with the real project reference.
-         *
-         * Example:
-         * GameStats.Instance.stat.tot_Wealth += amount;
-         */
-    }
-}
+    InteractionType.Track,
+    (int)PriorityTier.Social
+},
 ```
-
-This isolates the unknown town-stat API to one small adapter instead of coupling it directly to `DepositResourcesAction`.
 
 ---
 
-# 17. 🧾 Register New Social Actions
-
-In `actionForInteraction`, add:
+## ☐ Add To `registry`
 
 ```csharp
-{ InteractionType.Track, AgentAction.track },
-{ InteractionType.DepositResources, AgentAction.deposit },
+{
+    InteractionType.Track,
+    new TrackAction()
+},
 ```
 
-The dictionary should resemble:
+---
+
+## Updated Registration Dictionaries
 
 ```csharp
 private static readonly
@@ -1832,47 +924,49 @@ actionForInteraction = new()
 };
 ```
 
----
-
-## ☐ Add Priorities
-
-Add:
-
 ```csharp
-{ InteractionType.Track, (int)PriorityTier.Social },
-{ InteractionType.DepositResources, (int)PriorityTier.Social },
+private static readonly
+Dictionary<InteractionType, int>
+priorityForInteraction = new()
+{
+    {
+        InteractionType.Combat,
+        (int)PriorityTier.Combat
+    },
+    {
+        InteractionType.VampireBite,
+        (int)PriorityTier.Combat
+    },
+    {
+        InteractionType.BarFight,
+        (int)PriorityTier.Combat
+    },
+    {
+        InteractionType.HarvestAnimal,
+        (int)PriorityTier.Combat
+    },
+    {
+        InteractionType.Heal,
+        (int)PriorityTier.Social
+    },
+    {
+        InteractionType.Swoon,
+        (int)PriorityTier.Social
+    },
+    {
+        InteractionType.Convert,
+        (int)PriorityTier.Social
+    },
+    {
+        InteractionType.Track,
+        (int)PriorityTier.Social
+    },
+    {
+        InteractionType.DepositResources,
+        (int)PriorityTier.Social
+    }
+};
 ```
-
-A sensible priority order is:
-
-```text
-DepositResources
-    Highest hunting priority
-
-HarvestAnimal
-    Next
-
-Combat against fully tracked prey
-    Next
-
-Track
-    Lowest hunting priority
-```
-
-The exact enum tier can stay `Social`; use the interaction’s configured `priority` to determine which hunting interaction is selected first.
-
----
-
-## ☐ Register Handlers
-
-Add:
-
-```csharp
-{ InteractionType.Track, new TrackAction() },
-{ InteractionType.DepositResources, new DepositResourcesAction() },
-```
-
-The registry should resemble:
 
 ```csharp
 private static readonly
@@ -1924,22 +1018,505 @@ registry = new()
 
 ---
 
-# 18. 🦴 Update `SocialActions.Process()` For Corpses
+# 15. 🔁 Final Tracking Cycle
 
-The current method rejects every dead target:
+```text
+Track Interaction Becomes Available
+    ↓
+ActionManager Calls FindBestTrackingTarget()
+    ↓
+Current Animal And Alternatives Are Scored
+    ↓
+Switch Penalty Is Applied To Alternatives
+    ↓
+Winner Is Stored In currentTarget[Track]
+    ↓
+Existing ActionManager Movement Runs
+    ↓
+Hunter Reaches Animal
+    ↓
+AgentAction.track Is Proposed
+    ↓
+AgentActionState Accepts Proposal
+    ↓
+TrackAction Executes
+    ↓
+Animal Track Progress Increases
+    ↓
+TrackAction Releases AgentActionState
+    ↓
+ActionManager Clears The Plan
+    ↓
+Next Decision Runs
+    ↓
+FindBestTrackingTarget() Runs Again
+```
+
+This allows the hunter to reconsider all animals after every completed tracking action.
+
+---
+
+# 16. ✅ Add Hunting Conditions
+
+## ☐ `hasTrackableAnimal`
+
+True when at least one valid living animal has the required target tag and has not reached its tracking threshold.
+
+```text
+Matching Animal Exists
+    ↓
+Animal Is Alive
+    ↓
+Animal Is Not Fully Tracked
+```
+
+---
+
+## ☐ `animalTracked`
+
+True when the hunter’s current tracking target has reached its required progress.
 
 ```csharp
-if (self == null ||
-    target == null ||
-    target.isDead)
+private bool IsCurrentAnimalTracked()
 {
-    return;
+    Agent target =
+        agent.GetCurrentTarget(
+            InteractionType.Track);
+
+    if (target == null ||
+        target.isDead)
+    {
+        return false;
+    }
+
+    ScriptableAgent data =
+        AgentData.Instance?.GetAgent(
+            target.type);
+
+    if (data == null)
+        return false;
+
+    return target.GetSocialProgress(
+               InteractionType.Track)
+           >= data.trackingRequired;
 }
 ```
 
-That prevents `HarvestAnimalAction` from running.
+---
 
-Replace it with:
+## ☐ `animalDead`
+
+True when a valid dead, unharvested animal exists.
+
+```text
+Animal Is Dead
+    ↓
+Animal Has Not Been Harvested
+```
+
+---
+
+## ☐ `carryingResources`
+
+```csharp
+private bool IsCarryingResources()
+{
+    return agent.HasInventoryItems();
+}
+```
+
+---
+
+# 17. 🧠 Configure Hunter Interactions
+
+The hunter’s `ScriptableAgent` should contain these interactions.
+
+---
+
+## 🏕️ DepositResources
+
+```text
+Condition:
+    CarryingResources
+
+Priority:
+    Highest Hunting Priority
+```
+
+The hunter should return resources before beginning another hunt.
+
+---
+
+## 🔪 HarvestAnimal
+
+```text
+Target Tags:
+    Prey
+
+Condition:
+    AnimalDead
+
+Priority:
+    Higher Than Combat And Track
+```
+
+---
+
+## ⚔️ Combat
+
+```text
+Target Tags:
+    Prey
+
+Condition:
+    AnimalTracked
+
+Priority:
+    Higher Than Track
+
+Value:
+    Damage Per Attack
+```
+
+Use normal damage rather than instant death so hunting takes time.
+
+---
+
+## 🦌 Track
+
+```text
+Target Tags:
+    Prey
+
+Condition:
+    HasTrackableAnimal
+
+Priority:
+    Lowest Hunting Priority
+
+Chance:
+    1
+
+Value:
+    Tracking Progress Per Completed Action
+
+Cooldown:
+    Delay Before Another Tracking Action
+```
+
+Possible initial values:
+
+```text
+Track Value: 5
+
+Pig Required Progress: 20
+
+Coyote Required Progress: 50
+
+Buffalo Required Progress: 100
+```
+
+---
+
+# 18. 🔪 Replace `HarvestAnimalAction`
+
+The current implementation:
+
+```csharp
+AgentDeath.HurtAgent(
+    target,
+    deathType.bleeding,
+    9999f);
+```
+
+kills the animal.
+
+The new harvesting action should only operate on an animal that is already dead.
+
+Replace the class with:
+
+```csharp
+public class HarvestAnimalAction :
+    ISocialAction
+{
+    public void Execute(
+        Agent self,
+        Agent target,
+        AgentInteraction interaction)
+    {
+        if (self == null ||
+            target == null)
+        {
+            self?.Visuals.Release();
+            return;
+        }
+
+        if (!target.isDead)
+        {
+            Debug.LogWarning(
+                $"{self.type} tried to harvest " +
+                $"{target.type}, but it is alive."
+            );
+
+            self.Visuals.Release();
+            return;
+        }
+
+        if (target.harvested)
+        {
+            self.Visuals.Release();
+            return;
+        }
+
+        ScriptableAgent animalData =
+            AgentData.Instance?.GetAgent(
+                target.type);
+
+        if (animalData == null)
+        {
+            self.Visuals.Release();
+            return;
+        }
+
+        if (animalData.harvestDrops != null)
+        {
+            foreach (InventoryItem drop in
+                     animalData.harvestDrops)
+            {
+                if (drop == null ||
+                    drop.amount <= 0)
+                {
+                    continue;
+                }
+
+                self.AddToInventory(
+                    drop.type,
+                    drop.amount);
+            }
+        }
+
+        target.harvested = true;
+
+        if (self.GetCurrentTarget(
+                InteractionType.Track)
+            == target)
+        {
+            self.ClearCurrentTarget(
+                InteractionType.Track);
+        }
+
+        Debug.Log(
+            $"{self.type} harvested " +
+            $"{target.type}."
+        );
+
+        self.Visuals.Release();
+    }
+}
+```
+
+---
+
+# 19. 🦴 Allow `HarvestAnimal` To Target Corpses
+
+The existing target search excludes dead agents.
+
+Update `FindNearestValidTarget()` so harvesting can find corpses.
+
+Replace:
+
+```csharp
+if (candidate == null ||
+    candidate == agent ||
+    candidate.isDead ||
+    candidate.IsLeavingTown)
+{
+    continue;
+}
+```
+
+With:
+
+```csharp
+if (candidate == null ||
+    candidate == agent ||
+    candidate.IsLeavingTown)
+{
+    continue;
+}
+
+bool needsDeadTarget =
+    interaction.type ==
+    InteractionType.HarvestAnimal;
+
+if (needsDeadTarget)
+{
+    if (!candidate.isDead ||
+        candidate.harvested)
+    {
+        continue;
+    }
+}
+else if (candidate.isDead)
+{
+    continue;
+}
+```
+
+The full method becomes:
+
+```csharp
+private Agent FindNearestValidTarget(
+    AgentInteraction interaction)
+{
+    var allAgents =
+        GameManager.Instance?.AllAgents;
+
+    if (allAgents == null)
+        return null;
+
+    Agent bestTarget = null;
+    float bestDist = float.MaxValue;
+
+    Vector3 selfPos =
+        agent.transform.position;
+
+    foreach (var candidates in allAgents)
+    {
+        foreach (Agent candidate in
+                 candidates.Value)
+        {
+            if (candidate == null ||
+                candidate == agent ||
+                candidate.IsLeavingTown)
+            {
+                continue;
+            }
+
+            bool needsDeadTarget =
+                interaction.type ==
+                InteractionType.HarvestAnimal;
+
+            if (needsDeadTarget)
+            {
+                if (!candidate.isDead ||
+                    candidate.harvested)
+                {
+                    continue;
+                }
+            }
+            else if (candidate.isDead)
+            {
+                continue;
+            }
+
+            if (!candidate.HasAnyTag(
+                    interaction.targetTags))
+            {
+                continue;
+            }
+
+            float dist =
+                Vector3.Distance(
+                    selfPos,
+                    candidate.transform.position);
+
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                bestTarget = candidate;
+            }
+        }
+    }
+
+    return bestTarget;
+}
+```
+
+---
+
+# 20. 🦴 Allow Active Harvest Plans To Keep Dead Targets
+
+Update `ValidateActiveTarget()`:
+
+```csharp
+private bool ValidateActiveTarget()
+{
+    if (activeTarget == null ||
+        activeInteraction == null)
+    {
+        return false;
+    }
+
+    if (activeTarget.IsLeavingTown)
+        return false;
+
+    if (activeInteraction.type ==
+        InteractionType.HarvestAnimal)
+    {
+        if (!activeTarget.isDead)
+            return false;
+
+        if (activeTarget.harvested)
+            return false;
+    }
+    else if (activeTarget.isDead)
+    {
+        return false;
+    }
+
+    if (!activeTarget.HasAnyTag(
+            activeInteraction.targetTags))
+    {
+        return false;
+    }
+
+    return true;
+}
+```
+
+---
+
+# 21. ⚙️ Allow `SocialActions.Process()` To Harvest Corpses
+
+The existing method rejects all dead targets.
+
+Replace:
+
+```csharp
+public static void Process(
+    Agent self,
+    Agent target,
+    AgentInteraction interaction)
+{
+    if (self == null ||
+        target == null ||
+        target.isDead)
+    {
+        return;
+    }
+
+    if (registry.TryGetValue(
+            interaction.type,
+            out var handler))
+    {
+        handler.Execute(
+            self,
+            target,
+            interaction);
+    }
+    else
+    {
+        Debug.LogWarning(
+            $"SocialActions: no handler " +
+            $"registered for " +
+            $"{interaction.type}"
+        );
+    }
+}
+```
+
+With:
 
 ```csharp
 public static void Process(
@@ -1958,8 +1535,11 @@ public static void Process(
         interaction.type ==
         InteractionType.HarvestAnimal;
 
-    if (target.isDead && !allowsDeadTarget)
+    if (target.isDead &&
+        !allowsDeadTarget)
+    {
         return;
+    }
 
     if (registry.TryGetValue(
             interaction.type,
@@ -1973,373 +1553,136 @@ public static void Process(
     else
     {
         Debug.LogWarning(
-            $"SocialActions: no handler registered " +
-            $"for {interaction.type}"
+            $"SocialActions: no handler " +
+            $"registered for " +
+            $"{interaction.type}"
         );
     }
 }
 ```
 
-`DepositResources` passes the hunter itself as `target`, so it works with the existing interface.
-
 ---
 
-# 19. ✅ Implement Interaction Conditions
+# 22. 🏕️ Add Resource Deposit Method
 
-`ActionManager.SelectAction()` currently needs to check `interaction.conditions` before considering priority and chance.
+Depositing converts the hunter’s physical inventory into abstract town resources.
 
----
+```text
+Food
+    → Town Food
 
-## ☐ Add `AreConditionsMet()`
+Fur
+    → Town Wealth
+```
 
-Add to `ActionManager`:
+Add a method on the hunter or a resource service:
 
 ```csharp
-private bool AreConditionsMet(
-    AgentInteraction interaction)
+public void DepositHuntingResources()
 {
-    if (interaction.conditions == null ||
-        interaction.conditions.Count == 0)
+    if (inventory == null ||
+        inventory.Count == 0)
     {
-        return true;
+        return;
     }
 
-    foreach (Condition condition in
-             interaction.conditions)
+    int foodToDeposit = 0;
+    int wealthToDeposit = 0;
+
+    foreach (InventoryItem item in inventory)
     {
-        if (condition == null)
+        if (item == null ||
+            item.amount <= 0)
+        {
             continue;
+        }
 
-        if (!IsConditionMet(
-                interaction,
-                condition))
+        switch (item.type)
         {
-            return false;
+            case ObjectType.Food:
+                foodToDeposit +=
+                    item.amount;
+                break;
+
+            case ObjectType.Fur:
+                wealthToDeposit +=
+                    item.amount;
+                break;
         }
     }
 
-    return true;
+    /*
+     * Replace these two lines with the
+     * actual town-stat references.
+     *
+     * Example:
+     *
+     * stat.tot_food += foodToDeposit;
+     * stat.tot_Wealth += wealthToDeposit;
+     */
+
+    inventory.Clear();
+
+    Debug.Log(
+        $"{type} deposited " +
+        $"{foodToDeposit} food and " +
+        $"{wealthToDeposit} wealth."
+    );
 }
 ```
 
 ---
 
-## ☐ Add `IsConditionMet()`
+# 23. 🏕️ Add `DepositResourcesAction`
 
 ```csharp
-private bool IsConditionMet(
-    AgentInteraction interaction,
-    Condition condition)
+public class DepositResourcesAction :
+    ISocialAction
 {
-    switch (condition.condition)
+    public void Execute(
+        Agent self,
+        Agent target,
+        AgentInteraction interaction)
     {
-        case ConditionType.noCondition:
-            return true;
+        if (self == null)
+            return;
 
-        case ConditionType.timeOfDay:
-            return TimeManager.Instance != null &&
-                   TimeManager.Instance.IsDaytime;
+        self.DepositHuntingResources();
 
-        case ConditionType.haveAnimal:
-            return agent.GetCurrentTarget(
-                       InteractionType.Track) != null;
-
-        case ConditionType.hasTrackableAnimal:
-            return HasAvailableTrackableAnimal(
-                interaction);
-
-        case ConditionType.animalTracked:
-            return HasFullyTrackedAnimal();
-
-        case ConditionType.animalDead:
-            return HasHarvestableAnimal(
-                interaction);
-
-        case ConditionType.carryingResources:
-            return agent.HasInventoryItems();
-
-        default:
-            Debug.LogWarning(
-                $"Unhandled condition: " +
-                $"{condition.condition}"
-            );
-
-            return false;
+        self.Visuals.Release();
     }
 }
 ```
 
----
+This action should only execute after the hunter returns to the hunter hut.
 
-## ☐ Add `HasAvailableTrackableAnimal()`
+The existing workplace pathing in `AgentWorkSchedule` can handle returning to the workplace.
+
+When:
+
+```text
+Hunter Has Inventory
+    ↓
+Hunter Reaches Workplace
+```
+
+execute:
 
 ```csharp
-private bool HasAvailableTrackableAnimal(
-    AgentInteraction interaction)
-{
-    var allAgents =
-        GameManager.Instance?.AllAgents;
-
-    if (allAgents == null)
-        return false;
-
-    foreach (var candidates in allAgents)
-    {
-        foreach (Agent candidate in candidates.Value)
-        {
-            if (IsValidTrackingTarget(
-                    candidate,
-                    interaction))
-            {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
+self.DepositHuntingResources();
 ```
+
+A separate building-targeting system is not required for the first version.
 
 ---
 
-## ☐ Add `HasFullyTrackedAnimal()`
+# 24. ☠️ Drop Inventory When Hunter Dies
+
+Add:
 
 ```csharp
-private bool HasFullyTrackedAnimal()
-{
-    Agent target =
-        agent.GetCurrentTarget(
-            InteractionType.Track);
-
-    if (target == null ||
-        target.isDead ||
-        target.IsLeavingTown)
-    {
-        return false;
-    }
-
-    ScriptableAgent targetData =
-        AgentData.Instance?.GetAgent(
-            target.type);
-
-    if (targetData == null)
-        return false;
-
-    return target.GetSocialProgress(
-               InteractionType.Track) >=
-           targetData.trackingRequired;
-}
-```
-
----
-
-## ☐ Add `HasHarvestableAnimal()`
-
-```csharp
-private bool HasHarvestableAnimal(
-    AgentInteraction interaction)
-{
-    var allAgents =
-        GameManager.Instance?.AllAgents;
-
-    if (allAgents == null)
-        return false;
-
-    foreach (var candidates in allAgents)
-    {
-        foreach (Agent candidate in candidates.Value)
-        {
-            if (candidate == null ||
-                candidate == agent ||
-                candidate.IsLeavingTown)
-            {
-                continue;
-            }
-
-            if (!candidate.isDead ||
-                candidate.harvested)
-            {
-                continue;
-            }
-
-            if (!candidate.HasAnyTag(
-                    interaction.targetTags))
-            {
-                continue;
-            }
-
-            return true;
-        }
-    }
-
-    return false;
-}
-```
-
----
-
-# 20. 🧠 Configure Hunter Interactions
-
-Configure the hunter’s `ScriptableAgent` interactions in this order of priority.
-
----
-
-## 🏕️ DepositResources
-
-```text
-Target Tags:
-    None required because target is self
-
-Conditions:
-    CarryingResources
-
-Priority:
-    Highest hunting priority
-
-Range:
-    Ignored because ActionManager moves to workplace
-
-Cooldown:
-    Short
-```
-
----
-
-## 🔪 HarvestAnimal
-
-```text
-Target Tags:
-    Prey
-
-Conditions:
-    AnimalDead
-
-Priority:
-    Higher than Combat and Track
-
-Range:
-    Approximately 1
-
-canEnterTargetBuilding:
-    True if penned animals occupy building tiles
-```
-
----
-
-## ⚔️ Combat
-
-```text
-Target Tags:
-    Prey
-
-Conditions:
-    AnimalTracked
-
-Priority:
-    Higher than Track
-
-Range:
-    Normal combat range
-
-Value:
-    Hunting damage per attack
-```
-
-Do not use `9999` damage here if hunting should take time.
-
-Use several combat executions so the kill develops slowly.
-
----
-
-## 🦌 Track
-
-```text
-Target Tags:
-    Prey
-
-Conditions:
-    HasTrackableAnimal
-
-Priority:
-    Lowest hunting priority
-
-Chance:
-    1
-
-Range:
-    Ignored for tracking-waypoint arrival
-
-Cooldown:
-    Controls pause between tracking cycles
-
-Value:
-    Tracking progress gained per waypoint
-```
-
-A reasonable first value:
-
-```text
-Track Value: 5
-Tracking Required: 100
-```
-
-This requires roughly 20 completed tracking waypoints for a buffalo.
-
----
-
-# 21. 🏕️ Keep Hunters From Loitering At Work While Hunting
-
-The hunter should treat the hut as a base.
-
-The interaction system should run before ordinary workplace wandering.
-
-Desired priority:
-
-```text
-Active Social Plan
-    ↓
-Carrying Resources → Deposit
-    ↓
-Dead Animal → Harvest
-    ↓
-Tracked Animal → Combat
-    ↓
-Trackable Animal → Track
-    ↓
-Nothing Available → Rest Near Hunter Hut
-```
-
-If `AgentSchedule.RunSchedules()` currently sends the hunter into normal workplace roaming before conditions can select hunting, add a check before `RunWorkSchedule()`.
-
-Example:
-
-```csharp
-if (agent.Actions.HasActivePlan)
-    return;
-
-if (agent.type == AgentType.furTrader &&
-    agent.Actions.HasAvailableHuntingInteraction())
-{
-    return;
-}
-
-agent.WorkSchedule.RunWorkSchedule();
-```
-
-Only add this if testing shows the work schedule is stealing control before the interaction system can start hunting.
-
-Do not add a separate `HunterBehaviour` class.
-
----
-
-# 22. ☠️ Drop Inventory When A Hunter Dies
-
-The complete loot-world-object system can come after the first hunting loop.
-
-For the first pass, create a method that gathers what must be dropped.
-
-```csharp
-public List<InventoryItem> TakeInventoryForDrop()
+public List<InventoryItem>
+    TakeInventoryForDrop()
 {
     List<InventoryItem> droppedItems =
         new List<InventoryItem>();
@@ -2349,8 +1692,11 @@ public List<InventoryItem> TakeInventoryForDrop()
 
     foreach (InventoryItem item in inventory)
     {
-        if (item == null || item.amount <= 0)
+        if (item == null ||
+            item.amount <= 0)
+        {
             continue;
+        }
 
         droppedItems.Add(
             new InventoryItem(
@@ -2364,72 +1710,102 @@ public List<InventoryItem> TakeInventoryForDrop()
 }
 ```
 
-Call this from the agent-death flow:
+Call this from the death system:
 
 ```csharp
 List<InventoryItem> droppedItems =
     dyingAgent.TakeInventoryForDrop();
 ```
 
-Then provide `droppedItems` to the future loot-object spawner.
+The future loot object stores `droppedItems`.
 
 Desired result:
 
 ```text
 Hunter Dies
     ↓
-Inventory Leaves Hunter
+Food And Fur Drop
     ↓
-Loot Exists In World
+Resources Remain In World
     ↓
-Another Agent Can Recover It Later
+Another Agent Can Recover Them Later
 ```
 
 ---
 
-# 23. 🧪 Testing Order
+# 25. 🧪 Testing Order
 
-## ☐ Test 1: Inventory
-
-Manually call:
+## ☐ Test Inventory
 
 ```csharp
 agent.AddToInventory(
     ObjectType.Food,
     10);
+
+agent.AddToInventory(
+    ObjectType.Food,
+    5);
 ```
 
-Verify in the Inspector:
+Expected Inspector result:
 
 ```text
-Food: 10
-```
-
-Call it again and verify:
-
-```text
-Food: 20
+Food: 15
 ```
 
 ---
 
-## ☐ Test 2: Tracking Target Selection
+## ☐ Test Progress
+
+```csharp
+animal.AddSocialProgress(
+    InteractionType.Track,
+    5f);
+```
+
+Expected:
+
+```text
+Track Progress: 5
+```
+
+---
+
+## ☐ Test Current Target
+
+```csharp
+hunter.SetCurrentTarget(
+    InteractionType.Track,
+    buffalo);
+```
+
+Expected:
+
+```text
+currentTarget[Track] → Buffalo
+```
+
+---
+
+## ☐ Test Target Selection
 
 Place:
 
 ```text
-One nearby low-value pig
+One Nearby Pig
 
-One distant high-value buffalo
+One Distant Buffalo
 ```
 
-Verify that `CalculateTrackingScore()` selects the expected target.
+Verify both animals receive a score.
+
+Verify the animal with the highest final score is selected.
 
 ---
 
-## ☐ Test 3: Target Persistence
+## ☐ Test Persistence
 
-Allow the hunter to begin tracking an animal.
+Allow the hunter to begin tracking a buffalo.
 
 Verify:
 
@@ -2438,108 +1814,63 @@ hunter.GetCurrentTarget(
     InteractionType.Track)
 ```
 
-returns that animal.
+continues returning the buffalo.
 
-Verify alternatives receive the switching penalty.
+Alternative animals should receive the switch penalty.
 
 ---
 
-## ☐ Test 4: Tracking Movement
+## ☐ Test Reconsideration
 
-Verify one tracking cycle:
+After one Track action:
 
 ```text
-Track Selected
-    ↓
-Tracking Waypoint Chosen
-    ↓
-Hunter Walks To Waypoint
-    ↓
-TrackAction Executes
-    ↓
 Progress Increases
     ↓
-ActionState Releases
+TrackAction Releases
     ↓
-Plan Clears
+ActionManager Thinks Again
+    ↓
+FindBestTrackingTarget Runs Again
 ```
+
+Verify the hunter can keep the current target or switch to a significantly better one.
 
 ---
 
-## ☐ Test 5: Reconsideration
-
-After one completed waypoint, spawn a more valuable animal.
-
-Verify the next Track selection reruns:
-
-```csharp
-FindBestTrackingTarget()
-```
-
-The hunter should either:
-
-```text
-Keep Current Target
-```
-
-or:
-
-```text
-Switch To Better Target
-```
-
-according to score.
-
----
-
-## ☐ Test 6: Sleep Persistence
-
-Allow partial tracking progress.
-
-At night:
-
-```text
-Hunter Goes Home
-```
-
-The animal’s tracking progress should remain unchanged.
-
-The next day, the hunter should be able to continue.
-
----
-
-## ☐ Test 7: Fully Tracked Transition
+## ☐ Test Tracking Threshold
 
 When:
 
 ```csharp
-target.GetSocialProgress(
+animal.GetSocialProgress(
     InteractionType.Track)
 >=
-targetData.trackingRequired
+animalData.trackingRequired
 ```
 
-verify:
+expected result:
 
 ```text
-Track Condition Stops Passing
-Combat Condition Starts Passing
+Track Stops Being Available
+    ↓
+Combat Becomes Available
 ```
 
 ---
 
-## ☐ Test 8: Slow Kill
+## ☐ Test Slow Combat
 
-Use normal damage rather than instant death.
+Use normal combat damage.
 
-Verify:
+Expected:
 
 ```text
-Combat
+Attack
     ↓
 Cooldown
     ↓
-Combat
+Attack
     ↓
 Cooldown
     ↓
@@ -2548,83 +1879,32 @@ Animal Dies
 
 ---
 
-## ☐ Test 9: Harvest Corpse
+## ☐ Test Harvesting
 
-Verify that dead animals are accepted through:
-
-```text
-FindNearestValidTarget
-ValidateActiveTarget
-SocialActions.Process
-```
-
-Verify:
+Expected:
 
 ```text
+Animal Dies
+    ↓
+HarvestAnimal Becomes Available
+    ↓
+Hunter Reaches Corpse
+    ↓
 Harvest Drops Enter Inventory
+    ↓
 Animal.harvested = true
+    ↓
+Current Tracking Target Clears
 ```
 
 ---
 
-## ☐ Test 10: Deposit
+## ☐ Test Deposit
 
-Verify:
-
-```text
-CarryingResources Condition Passes
-    ↓
-Hunter Returns To Workplace
-    ↓
-DepositResourcesAction Executes
-    ↓
-Food Becomes Town Food
-    ↓
-Fur Becomes Town Wealth
-    ↓
-Inventory Clears
-```
-
----
-
-# 🌟 First Complete Success Test
+Expected:
 
 ```text
-Hunter Leaves Hut
-    ↓
-Hunter Evaluates Available Animals
-    ↓
-Hunter Selects Buffalo
-    ↓
-Hunter Walks To Tracking Waypoint
-    ↓
-Buffalo Tracking Progress Increases
-    ↓
-Track Action Releases
-    ↓
-Hunter Reconsiders Targets
-    ↓
-Hunter Continues Tracking Buffalo
-    ↓
-Night Falls
-    ↓
-Hunter Sleeps
-    ↓
-Tracking Progress Remains On Buffalo
-    ↓
-Hunter Continues Next Day
-    ↓
-Buffalo Becomes Fully Tracked
-    ↓
-Combat Unlocks
-    ↓
-Hunter Slowly Kills Buffalo
-    ↓
-Harvest Unlocks
-    ↓
-Food And Fur Enter Hunter Inventory
-    ↓
-Deposit Unlocks
+Hunter Carries Food And Fur
     ↓
 Hunter Returns To Hunter Hut
     ↓
@@ -2637,27 +1917,97 @@ Inventory Clears
 
 ---
 
-# 🌟 First Target-Switching Story
+## ☐ Test Death
+
+Expected:
 
 ```text
-Hunter Tracks Buffalo To 60%
+Hunter Carries Resources
     ↓
-A More Valuable Animal Appears
+Bear Kills Hunter
     ↓
-Next Track Cycle Re-evaluates Targets
+Inventory Leaves Hunter
     ↓
-New Animal Score Is Calculated
-    ↓
-Switch Penalty Is Applied
-    ↓
-Hunter Either Remains Committed
-    OR
-Hunter Switches To The Better Animal
+Resources Remain Recoverable
 ```
 
 ---
 
-# 🌟 First Death Story
+# 🌟 First Complete Success Test
+
+```text
+Hunter Leaves Hut
+    ↓
+FindBestTrackingTarget Selects Buffalo
+    ↓
+currentTarget[Track] Stores Buffalo
+    ↓
+Hunter Moves Into Range
+    ↓
+TrackAction Adds Progress
+    ↓
+TrackAction Releases AgentActionState
+    ↓
+ActionManager Thinks Again
+    ↓
+Buffalo Is Re-evaluated Without Switch Penalty
+    ↓
+Other Animals Are Evaluated With Switch Penalty
+    ↓
+Hunter Continues Tracking Buffalo
+    ↓
+Night Falls
+    ↓
+Hunter Sleeps
+    ↓
+Tracking Progress Remains On Buffalo
+    ↓
+Hunter Continues Next Day
+    ↓
+Buffalo Reaches Tracking Threshold
+    ↓
+Combat Unlocks
+    ↓
+Hunter Slowly Kills Buffalo
+    ↓
+HarvestAnimal Unlocks
+    ↓
+Food And Fur Enter Inventory
+    ↓
+Hunter Returns To Hut
+    ↓
+Food Becomes Town Food
+    ↓
+Fur Becomes Town Wealth
+    ↓
+Inventory Clears
+```
+
+---
+
+# 🌟 Target-Switching Story Test
+
+```text
+Hunter Tracks Buffalo To 60%
+    ↓
+More Valuable Animal Appears
+    ↓
+Hunter Completes Current Track Action
+    ↓
+ActionState Releases
+    ↓
+FindBestTrackingTarget Runs Again
+    ↓
+New Animal Receives Switch Penalty
+    ↓
+New Animal Still Scores Higher
+    ↓
+Hunter Switches Targets
+```
+
+---
+
+# 🌟 Death Story Test
 
 ```text
 Hunter Tracks Buffalo
@@ -2670,9 +2020,12 @@ Hunter Starts Returning Home
     ↓
 Bear Kills Hunter
     ↓
-Inventory Drops In Wilderness
+Inventory Drops
     ↓
 Town Receives Nothing
 ```
 
-If these stories happen naturally through conditions, target selection, movement, actions, and progress, the hunting system is working the way BoomTown is intended to work.
+If these stories happen naturally through interactions, conditions, target selection, progress, and existing movement, the hunting system is working correctly.
+
+
+The main changes are now intentionally minimal: tracking uses the existing target movement, ActionManager only receives smarter target selection, and TrackAction only adds progress and releases itself.
