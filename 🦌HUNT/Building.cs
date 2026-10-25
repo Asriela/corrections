@@ -22,15 +22,17 @@ public class Building : MonoBehaviour
     public bool isBroken;
 
     [Header("Footprint")]
+    // GridPosition is the anchor tile: minimum X and minimum Y.
     public Vector2Int footprintSize = Vector2Int.one;
 
     [Header("Employees")]
     public Agent assignedAgent;
 
+    // Assignment and physical presence are deliberately separate.
     private bool workerPresent = false;
 
-    // Tracks agents who are physically sleeping inside this building.
-    // This works for houses and buildings that double as homes.
+    // Agents physically sleeping inside this building.
+    // This works for normal houses and live-in workplaces.
     private readonly HashSet<Agent> residentsInside =
         new HashSet<Agent>();
 
@@ -51,6 +53,8 @@ public class Building : MonoBehaviour
         if (collisionBox2D == null)
             collisionBox2D = GetComponent<BoxCollider2D>();
 
+        // Buildings begin with their light disabled.
+        // RefreshLightState decides whether it should be enabled.
         if (myLight != null)
             myLight.enabled = false;
     }
@@ -102,6 +106,9 @@ public class Building : MonoBehaviour
         GridPosition = gridPos;
     }
 
+    /// <summary>
+    /// Returns every grid tile occupied by this building.
+    /// </summary>
     public IEnumerable<Vector2Int> GetOccupiedTiles()
     {
         for (int x = 0; x < footprintSize.x; x++)
@@ -114,6 +121,10 @@ public class Building : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// Returns the offset from the anchor tile to the visual center
+    /// of the complete building footprint.
+    /// </summary>
     public static Vector2 GetFootprintCenterOffset(
         Vector2Int footprint)
     {
@@ -169,6 +180,29 @@ public class Building : MonoBehaviour
 
     private void DoBuildingEffect()
     {
+        // ───────── LIVE-IN WORKPLACES ─────────
+        //
+        // A live-in workplace spawns its own employee instead of
+        // waiting for the ordinary employment system.
+        //
+        // SpawnLiveInEmployee:
+        // 1. Spawns a job seeker.
+        // 2. Immediately changes them to data.jobType.
+        // 3. Assigns them to this workplace.
+        // 4. AssignAgent also makes this building their home.
+        //
+        // This check happens before the BuildingType switch so new
+        // live-in workplace types do not require hardcoded cases.
+        if (data != null &&
+            data.employeeLivesHere &&
+            data.employeeCapacity > 0)
+        {
+            SpawnLiveInEmployee();
+            return;
+        }
+
+        // ───────── ORDINARY BUILDINGS ─────────
+
         switch (type)
         {
             case BuildingType.house:
@@ -195,9 +229,11 @@ public class Building : MonoBehaviour
                 agentToHouse.myHouse = this;
 
                 if (agentToHouse.type == AgentType.vagrant)
+                {
                     agentToHouse.SetRole(
                         AgentType.jobSeeker
                     );
+                }
 
                 break;
             }
@@ -233,6 +269,95 @@ public class Building : MonoBehaviour
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Spawns and configures the resident employee for a workplace
+    /// whose ScriptableBuilding has employeeLivesHere enabled.
+    /// </summary>
+    private void SpawnLiveInEmployee()
+    {
+        if (GameManager.Instance == null)
+        {
+            Debug.LogWarning(
+                $"[Building] Could not spawn a live-in employee for " +
+                $"{name} because GameManager.Instance is null."
+            );
+
+            return;
+        }
+
+        if (data == null)
+        {
+            Debug.LogWarning(
+                $"[Building] Could not spawn a live-in employee for " +
+                $"{name} because the building has no ScriptableBuilding data."
+            );
+
+            return;
+        }
+
+        if (!data.employeeLivesHere)
+            return;
+
+        if (data.employeeCapacity <= 0)
+        {
+            Debug.LogWarning(
+                $"[Building] {name} is marked as a live-in workplace, " +
+                $"but its employee capacity is zero."
+            );
+
+            return;
+        }
+
+        // A live-in workplace requires a specific job.
+        if (data.jobType == AgentType.none)
+        {
+            Debug.LogWarning(
+                $"[Building] {name} is marked as a live-in workplace, " +
+                $"but its ScriptableBuilding jobType is AgentType.none."
+            );
+
+            return;
+        }
+
+        // Protect against duplicate spawning if DoBuildingEffect is
+        // accidentally called more than once.
+        if (assignedAgent != null)
+            return;
+
+        Vector3 spawnLocation =
+            FindSpawnNear(transform.position);
+
+        // Spawn through the standard civilian pathway first.
+        Agent liveInEmployee =
+            GameManager.Instance.SpawnAgent(
+                AgentType.jobSeeker,
+                spawnLocation
+            );
+
+        if (liveInEmployee == null)
+        {
+            Debug.LogWarning(
+                $"[Building] Failed to spawn the live-in employee " +
+                $"for {name}."
+            );
+
+            return;
+        }
+
+        liveInEmployee.outsider = false;
+
+        // Immediately apply the job configured on this building asset.
+        // This uses SetRole rather than directly changing agent.type so
+        // any role-specific initialization inside SetRole still runs.
+        liveInEmployee.SetRole(data.jobType);
+
+        // Assigns the workplace relationship.
+        //
+        // Because employeeLivesHere is enabled, AssignAgent also sets:
+        // liveInEmployee.myHouse = this;
+        AssignAgent(liveInEmployee);
     }
 
     private Agent FindExistingVagrant()
@@ -281,14 +406,14 @@ public class Building : MonoBehaviour
 
     public void AssignAgent(Agent agent)
     {
-        // Clean the old employee's references if this building is being
-        // assigned to someone else.
+        // Clean up an existing employee before replacing them.
         if (assignedAgent != null &&
             assignedAgent != agent)
         {
             Agent previousEmployee = assignedAgent;
 
-            previousEmployee.myWorkplace = null;
+            if (previousEmployee.myWorkplace == this)
+                previousEmployee.myWorkplace = null;
 
             if (data != null &&
                 data.employeeLivesHere &&
@@ -307,8 +432,8 @@ public class Building : MonoBehaviour
         {
             agent.myWorkplace = this;
 
-            // A live-in workplace, such as a hunter's hut, is both the
-            // employee's workplace and their home.
+            // A live-in workplace is both the employee's workplace
+            // and their home.
             if (data != null && data.employeeLivesHere)
                 agent.myHouse = this;
         }
@@ -322,7 +447,8 @@ public class Building : MonoBehaviour
         {
             Agent employeeBeingRemoved = assignedAgent;
 
-            employeeBeingRemoved.myWorkplace = null;
+            if (employeeBeingRemoved.myWorkplace == this)
+                employeeBeingRemoved.myWorkplace = null;
 
             if (data != null &&
                 data.employeeLivesHere &&
@@ -340,10 +466,17 @@ public class Building : MonoBehaviour
         RefreshLightState();
     }
 
+    /// <summary>
+    /// True only when the assigned employee is physically present
+    /// around the workplace.
+    /// </summary>
     public bool IsStaffed =>
         assignedAgent != null &&
         workerPresent;
 
+    /// <summary>
+    /// True when at least one resident is physically sleeping inside.
+    /// </summary>
     public bool HasResidentsInside
     {
         get
@@ -353,6 +486,10 @@ public class Building : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// True when somebody is working around the building or sleeping
+    /// inside it.
+    /// </summary>
     public bool IsOccupied =>
         IsStaffed || HasResidentsInside;
 
@@ -385,7 +522,8 @@ public class Building : MonoBehaviour
         if (resident == null)
             return;
 
-        // Only accept residents who currently consider this their home.
+        // Only agents who consider this building their home count as
+        // residents sleeping inside it.
         if (resident.myHouse != this)
             return;
 
@@ -557,9 +695,10 @@ public class Building : MonoBehaviour
 
             if (myLight != null)
             {
-                Sprite lightSprite = Help.GetSprite(
-                    $"Sprites/Buildings/{type}_light"
-                );
+                Sprite lightSprite =
+                    Help.GetSprite(
+                        $"Sprites/Buildings/{type}_light"
+                    );
 
                 myLight.sprite = lightSprite;
             }
