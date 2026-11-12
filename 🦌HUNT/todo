@@ -1,4 +1,6 @@
-see current action
-tracking conditions
-hang around is action
-better true false
+happiness - new xml and cs for menu
+see current action -conditions display in inspector with editor file add
+better true false-conditions true/false 
+tracking conditions  -saved md file
+hang around is action - we need building and location support for this - looking at structure to see how much change to support socialactions for interacting with buildings and locations
+revampitarget
