@@ -1,0 +1,24 @@
+Before generating the full classes, make these corrections:
+
+1. Every IInteractionTarget validity check must use:
+   target == null || !target.Exists
+
+2. ActionManager must expose both:
+   public Agent CurrentTarget => activeTarget as Agent;
+   public IInteractionTarget CurrentInteractionTarget => activeTarget;
+
+3. HasActivePlan must require a valid target:
+   activeInteraction != null &&
+   activeTarget != null &&
+   activeTarget.Exists
+
+4. Location infrastructure may be generated, but no Location action is
+   operational yet because no ISocialAction supports TargetKind.Location.
+   Do not claim Location actions work until Wander or another
+   Location-capable action is added.
+
+5. Verify the exact signatures of AgentPathing.IsTileWalkable and
+   AgentPathing.GridToWorld against the real AgentPathing.cs. Do not invent
+   those APIs if they do not exist.
+
+Everything else in the Agent/Building/Location target split may proceed.
